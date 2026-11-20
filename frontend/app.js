@@ -132,10 +132,6 @@ async function ensureActiveServiceWorker() {
 
 // -------------------- Bootstrap --------------------
 async function init() {
-  if ("serviceWorker" in navigator) {
-    ensureActiveServiceWorker().catch((err) => console.warn("SW preload warning:", err));
-  }
-
   if (!FIREBASE_CONFIG.apiKey || FIREBASE_CONFIG.apiKey.startsWith("REPLACE_")) {
     $("config-warning").classList.remove("hidden");
     return;
@@ -145,20 +141,26 @@ async function init() {
   auth = getAuth(app);
   db = getFirestore(app);
 
-  try {
-    if (await isMessagingSupported()) {
-      messaging = getMessaging(app);
-      onMessage(messaging, (payload) => {
-        const title = payload.notification?.title || "SwingBot";
-        const body = payload.notification?.body || "";
-        showToast(`${title}: ${body}`, 6000);
-      });
-    }
-  } catch (err) {
-    console.warn("FCM messaging unavailable:", err);
-  }
-
+  // Bind login & UI events IMMEDIATELY before any async operations
   bindEvents();
+
+  // Only initialize Web ServiceWorker / Web Push when running in a browser (NOT inside Native APK)
+  if (!getNativePushPlugin()) {
+    if ("serviceWorker" in navigator) {
+      ensureActiveServiceWorker().catch((err) => console.warn("SW preload warning:", err));
+    }
+    isMessagingSupported()
+      .then((supported) => {
+        if (!supported) return;
+        messaging = getMessaging(app);
+        onMessage(messaging, (payload) => {
+          const title = payload.notification?.title || "SwingBot";
+          const body = payload.notification?.body || "";
+          showToast(`${title}: ${body}`, 6000);
+        });
+      })
+      .catch((err) => console.warn("FCM messaging unavailable:", err));
+  }
 
   onAuthStateChanged(auth, async (user) => {
     if (user) {
