@@ -404,6 +404,12 @@ async function loadPortfolio() {
     renderPortfolio();
   } catch (err) {
     console.error("Failed to load portfolio:", err);
+    $("portfolio-list").innerHTML = `
+      <div class="rounded-2xl bg-rose-950/60 border border-rose-500/40 p-4 text-xs text-rose-200 space-y-1">
+        <p class="font-bold text-rose-300">Không thể kết nối Firestore (${escapeHtml(err.code || "error")})</p>
+        <p>${escapeHtml(err.message || err)}</p>
+        <p class="text-rose-200/80">Hãy kiểm tra đã tạo Firestore Database và Publish Rules cho email đang đăng nhập chưa.</p>
+      </div>`;
   }
 }
 
@@ -555,6 +561,8 @@ function openPortfolioModal(item) {
   $("pf-status").value = item?.status || "holding";
   $("pf-sold-half").checked = Boolean(item?.sold_half);
   $("pf-notes").value = item?.notes || "";
+  $("pf-form-error").classList.add("hidden");
+  $("pf-form-error").textContent = "";
   $("portfolio-modal").classList.remove("hidden");
 }
 
@@ -566,6 +574,12 @@ async function handleSavePortfolio(e) {
   e.preventDefault();
   const ticker = $("pf-ticker").value.trim().toUpperCase();
   if (!ticker) return;
+
+  const errEl = $("pf-form-error");
+  const btn = $("btn-save-portfolio");
+  errEl.classList.add("hidden");
+  btn.disabled = true;
+  btn.textContent = "Đang lưu...";
 
   const buyPrice = Number($("pf-buy-price").value);
   const existing = portfolioItems.find((x) => x.ticker === ticker);
@@ -585,12 +599,22 @@ async function handleSavePortfolio(e) {
   };
 
   try {
-    await setDoc(doc(db, "portfolio", ticker), payload, { merge: true });
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error("Hết thời gian kết nối Firestore (10s). Kiểm tra đã tạo Firestore Database trên Firebase Console chưa.")), 10000)
+    );
+    await Promise.race([
+      setDoc(doc(db, "portfolio", ticker), payload, { merge: true }),
+      timeoutPromise,
+    ]);
     closePortfolioModal();
     showToast(`Đã lưu lệnh ${ticker} vào Firestore!`);
     await loadPortfolio();
   } catch (err) {
-    alert("Lỗi lưu Firestore: " + (err.message || err.code));
+    errEl.textContent = `Lỗi lưu Firestore: ${err.code ? `[${err.code}] ` : ""}${err.message || err}`;
+    errEl.classList.remove("hidden");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Lưu vào Firestore";
   }
 }
 

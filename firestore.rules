@@ -4,7 +4,7 @@ service cloud.firestore {
     // THAY ĐỔI email bên dưới thành email tài khoản Firebase Auth cá nhân của bạn
     function isOwner() {
       return request.auth != null
-        && request.auth.token.email == "thkcnpt@gmail.com";
+        && request.auth.token.email == "tthien2k9@gmail.com";
     }
 
     // 1. fundamentals/{ticker}: PWA chỉ cần đọc, Backend (Admin SDK) bypass rules để ghi

@@ -267,9 +267,11 @@
                     class="w-full rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-xs text-white focus:outline-none focus:border-emerald-500"></textarea>
         </div>
 
+        <p id="pf-form-error" class="hidden text-xs text-rose-400 bg-rose-950/60 border border-rose-500/40 rounded-lg p-2.5"></p>
+
         <div class="flex gap-2 pt-2">
-          <button type="submit"
-                  class="flex-1 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold py-2.5 text-sm transition">
+          <button type="submit" id="btn-save-portfolio"
+                  class="flex-1 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-semibold py-2.5 text-sm transition">
             Lưu vào Firestore
           </button>
         </div>
