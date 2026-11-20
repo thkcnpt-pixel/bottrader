@@ -368,8 +368,8 @@ class VnstockClient:
         }
         base = f"https://iq.vietcap.com.vn/api/iq-insight-service/v1/company/{sym}"
 
-        # Ratio summary & quarterly metrics
-        r_ratio = self.session.get(f"{base}/ratio-latest", headers=iq_headers, timeout=8)
+        # Ratio summary from Vietcap IQ statistics-financial
+        r_ratio = self.session.get(f"{base}/statistics-financial", headers=iq_headers, timeout=8)
         ratio_data = r_ratio.json().get("data") if r_ratio.status_code == 200 else None
 
         r_inc = self.session.get(f"{base}/financial-statement", params={"section": "INCOME_STATEMENT"}, headers=iq_headers, timeout=8)
@@ -387,8 +387,13 @@ class VnstockClient:
         def _parse_quarters(qlist: List[Dict[str, Any]], mapping: Dict[str, Tuple[str, ...]]) -> Optional[pd.DataFrame]:
             if not qlist:
                 return None
+            sorted_q = sorted(
+                qlist,
+                key=lambda q: (int(q.get("yearReport") or 0), int(q.get("lengthReport") or 0)),
+                reverse=True,
+            )
             out_rows = []
-            for q in qlist[:8]:
+            for q in sorted_q[:8]:
                 rec: Dict[str, Any] = {
                     "yearReport": q.get("yearReport"),
                     "lengthReport": q.get("lengthReport"),
@@ -418,21 +423,12 @@ class VnstockClient:
         if isinstance(ratio_data, dict) and ratio_data:
             rat_df = pd.DataFrame([{
                 "roe": ratio_data.get("roe") or ratio_data.get("roae"),
-                "pe": ratio_data.get("pe") or ratio_data.get("priceToEarning"),
-                "pb": ratio_data.get("pb") or ratio_data.get("priceToBook"),
+                "pe": ratio_data.get("pe") or ratio_data.get("priceToEarning") or ratio_data.get("peRatio"),
+                "pb": ratio_data.get("pb") or ratio_data.get("priceToBook") or ratio_data.get("pbRatio"),
                 "debt_on_equity": ratio_data.get("de") or ratio_data.get("debtToEquity") or ratio_data.get("debtOnEquity"),
                 "bad_debt": ratio_data.get("badDebtRatio") or ratio_data.get("npl"),
                 "llr": ratio_data.get("llr"),
             }])
-        if not getattr(self, "_logged_iq_keys", False):
-            self._logged_iq_keys = True
-            logger.info(
-                "[VIETCAP_IQ_KEYS] %s | ratio_keys=%s | inc_q0_keys=%s | cf_q0_keys=%s",
-                sym,
-                list(ratio_data.keys())[:20] if isinstance(ratio_data, dict) else type(ratio_data).__name__,
-                list(inc_quarters[0].keys())[:20] if inc_quarters else [],
-                list(cf_quarters[0].keys())[:20] if cf_quarters else [],
-            )
 
         return {
             "income_statement": inc_df,

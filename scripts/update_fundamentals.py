@@ -351,9 +351,13 @@ def extract_fundamental_metrics(
     if ocf_ttm is not None and np_ttm is not None and np_ttm > 0:
         ocf_to_np = round(ocf_ttm / np_ttm, 2)
 
-    # Ratios (ROE, D/E, P/E, P/B)
+    # Ratios (ROE, D/E, P/E, P/B) — compute ROE directly from BCTC if ratio table omits it
     roe_vals = _safe_series(rat, ("roe",))
-    roe_pct = round(_normalize_pct(roe_vals[0]), 2) if roe_vals else None
+    if roe_vals:
+        roe_pct = round(_normalize_pct(roe_vals[0]), 2)
+    else:
+        eq_for_roe = _safe_series(bal, ("owner's equity", "owners_equity", "equity", "vốn chủ sở hữu"))
+        roe_pct = round(np_ttm / eq_for_roe[0] * 100.0, 2) if (np_ttm is not None and eq_for_roe and eq_for_roe[0] > 0) else None
 
     de_vals = _safe_series(rat, ("debt_on_equity", "debt/equity", "d/e", "debt_to_equity"))
     if de_vals:
