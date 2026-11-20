@@ -199,6 +199,8 @@ class TestNewsAndGeminiAndFrontendRules(unittest.TestCase):
                 "dividend_trap",
                 "biggest_risk",
                 "ai_referee_verdict",
+                "suggested_buy_price",
+                "suggested_buy_quantity",
             },
         )
 

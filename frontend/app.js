@@ -521,6 +521,28 @@ function renderDailyReport(report) {
                     </div>`
                   : ""
               }
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <div class="rounded-lg bg-amber-950/35 border border-amber-500/35 p-2.5">
+                  <p class="font-semibold text-amber-300">🎯 Nên đặt giá bao nhiêu</p>
+                  <p class="text-slate-200 mt-0.5 leading-relaxed">${escapeHtml(
+                    g.suggested_buy_price ||
+                      (c.actual_close
+                        ? `Tham khảo quanh vùng ${fmtVnd(Math.min(c.actual_close, c.ma20 || c.actual_close))} – ${fmtVnd(c.actual_close)} (chạy quét lại để AI chốt SL/TP chi tiết).`
+                        : "Chưa có dữ liệu.")
+                  )}</p>
+                </div>
+                <div class="rounded-lg bg-violet-950/35 border border-violet-500/35 p-2.5">
+                  <p class="font-semibold text-violet-300">💰 Nên mua bao nhiêu</p>
+                  <p class="text-slate-200 mt-0.5 leading-relaxed">${escapeHtml(
+                    g.suggested_buy_quantity ||
+                      (c.actual_close > 0
+                        ? Math.floor(500000 / c.actual_close) > 0
+                          ? `Với vốn 500k mua tối đa ~${Math.floor(500000 / c.actual_close)} CP lô lẻ (~${fmtVnd(Math.floor(500000 / c.actual_close) * c.actual_close)}).`
+                          : `Thị giá (${fmtVnd(c.actual_close)}) cao hơn vốn 500k/lệnh — cân nhắc bổ sung vốn hoặc chọn mã khác.`
+                        : "Chưa có dữ liệu.")
+                  )}</p>
+                </div>
+              </div>
             </div>
           </details>
         </article>`;

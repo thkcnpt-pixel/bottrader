@@ -193,6 +193,8 @@ def run_daily_scan() -> None:
             vnstock_news=vn_news_events.get("news", []),
             vnstock_events=vn_news_events.get("events", []),
         )
+        actual_close_val = float(cand.get("actual_close") or 0)
+        est_qty_500k = int(500_000 // actual_close_val) if actual_close_val > 0 else 0
         critique = gemini.analyze_risk(
             ticker=ticker,
             fundamental_summary={
@@ -200,6 +202,17 @@ def run_daily_scan() -> None:
                 "exchange": cand["exchange"],
                 "sector_group": cand["sector_group"],
                 "fundamental_score": cand["fundamental_score"],
+                "technical_score": cand["technical_score"],
+                "signal_type": cand["signal_type"],
+                "signal_reason": cand["reason"],
+                "actual_close_vnd": cand["actual_close"],
+                "ma20_vnd": cand["ma20"],
+                "ma50_vnd": cand["ma50"],
+                "rsi14": cand["rsi14"],
+                "vol_ratio": cand["vol_ratio"],
+                "fit_500k": cand["fit_500k"],
+                "reference_budget_vnd": 500_000,
+                "max_shares_for_500k": est_qty_500k,
                 "missing_bctc": cand["missing_bctc"],
                 "metrics": cand["metrics"],
             },

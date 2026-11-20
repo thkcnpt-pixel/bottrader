@@ -62,6 +62,12 @@ class RiskCritiqueSchema(BaseModel):
     ai_referee_verdict: str = Field(
         description="[AI 3 - Trọng tài] Tổng kết phản biện giữa AI 1 và AI 2: chốt phương án hành động tốt nhất, điều kiện giải ngân hoặc hủy kèo cho nhà đầu tư vốn nhỏ 500k (2-3 câu thực chiến bằng tiếng Việt)."
     )
+    suggested_buy_price: str = Field(
+        description="[Nên đặt giá bao nhiêu] Vùng giá / mức giá đặt lệnh mua LO cụ thể (VNĐ) dựa trên giá đóng cửa, MA20, MA50, kèm mức cắt lỗ (SL) và chốt lời (TP) tham khảo (1-2 câu súc tích bằng tiếng Việt)."
+    )
+    suggested_buy_quantity: str = Field(
+        description="[Nên mua bao nhiêu] Khối lượng cổ phiếu (CP) và số tiền giải ngân gợi ý cho vốn mục tiêu ~500.000 VNĐ (lô lẻ 1-99 CP), nên mua 1 lần hay chia 2 đợt, hoặc ghi rõ nếu giá cổ phiếu vượt vốn 500k (1-2 câu súc tích bằng tiếng Việt)."
+    )
 
 
 def _fallback_critique(reason: str) -> Dict[str, str]:
@@ -73,6 +79,8 @@ def _fallback_critique(reason: str) -> Dict[str, str]:
         "dividend_trap": msg,
         "biggest_risk": msg,
         "ai_referee_verdict": msg,
+        "suggested_buy_price": msg,
+        "suggested_buy_quantity": msg,
     }
 
 
@@ -105,8 +113,11 @@ def _build_prompt(
 - **AI 1 (Phe Bò — Cơ bản & Tăng trưởng):** Nêu luận điểm thuyết phục nhất để mua mã {ticker}.
 - **AI 2 (Phe Gấu — Phản biện gay gắt):** Đập lại AI 1 bằng cách soi kỹ 4 rủi ro cốt lõi (chất lượng lợi nhuận, tin xấu/lãnh đạo bán, bẫy cổ tức/kẹt lô lẻ, rủi ro lớn nhất 1-3 tháng).
 - **AI 3 (Trọng tài — Chốt phương án tốt nhất):** Cân bằng lập luận của cả AI 1 và AI 2 để rút ra kết luận thực chiến nhất (điểm cần theo dõi, kịch bản quản trị rủi ro). Không tự ý loại mã.
+- **Kế hoạch đặt lệnh cụ thể (bắt buộc có số liệu từ dữ liệu giá & kỹ thuật bên dưới):**
+  + **Nên đặt giá bao nhiêu (`suggested_buy_price`):** Đề xuất vùng giá mua LO hợp lý (ưu tiên canh nhịp chỉnh gần MA20 / dưới giá đóng cửa nếu phù hợp), kèm mốc cắt lỗ (SL) và chốt lời (TP) tham khảo bằng VNĐ.
+  + **Nên mua bao nhiêu (`suggested_buy_quantity`):** Đề xuất số lượng cổ phiếu cụ thể (lô lẻ CP) và số tiền tương ứng cho vốn ~500.000 VNĐ (nên vào 1 lần hay chia 2 đợt, hoặc khuyến nghị hạ tỷ trọng/quan sát nếu rủi ro cao).
 
-=== 1. TÓM TẮT BCTC 4-8 QUÝ GẦN NHẤT ===
+=== 1. TÓM TẮT BCTC, GIÁ & KỸ THUẬT HIỆN TẠI ===
 {bctc_json}
 
 === 2. LỊCH SỰ KIỆN & CỔ TỨC ===
@@ -115,13 +126,15 @@ def _build_prompt(
 === 3. TIN TỨC MỚI NHẤT ===
 {news_text}
 
-Trả về JSON đúng 6 trường bằng tiếng Việt súc tích, nêu rõ số liệu nếu có:
+Trả về JSON đúng 8 trường bằng tiếng Việt súc tích, nêu rõ số liệu cụ thể:
 1. ai_bull_thesis
 2. profit_quality
 3. negative_news
 4. dividend_trap
 5. biggest_risk
 6. ai_referee_verdict
+7. suggested_buy_price
+8. suggested_buy_quantity
 """
 
 
@@ -195,6 +208,8 @@ class GeminiAnalyst:
                         "dividend_trap": str(parsed.get("dividend_trap", "Không có dữ liệu.")),
                         "biggest_risk": str(parsed.get("biggest_risk", "Không có dữ liệu.")),
                         "ai_referee_verdict": str(parsed.get("ai_referee_verdict", "Không có dữ liệu.")),
+                        "suggested_buy_price": str(parsed.get("suggested_buy_price", "Không có dữ liệu.")),
+                        "suggested_buy_quantity": str(parsed.get("suggested_buy_quantity", "Không có dữ liệu.")),
                     }
                 except Exception as exc:  # noqa: BLE001
                     last_err = str(exc)

@@ -24,6 +24,8 @@ VALID_JSON = json.dumps(
         "dividend_trap": "Không có lịch chia cổ tức cổ phiếu gần đây.",
         "biggest_risk": "Áp lực chốt lời ngắn hạn.",
         "ai_referee_verdict": "Có thể giải ngân thăm dò.",
+        "suggested_buy_price": "Đặt mua LO quanh 41.000 - 41.500 đ, SL 38.500 đ, TP 48.000 đ.",
+        "suggested_buy_quantity": "Mua 12 CP lô lẻ (~495.000 đ) cho vốn 500k, chia 2 đợt mỗi đợt 6 CP.",
     },
     ensure_ascii=False,
 )
@@ -54,6 +56,8 @@ class TestGeminiAnalyst(unittest.TestCase):
             result = analyst.analyze_risk("VIC", {"roe_pct": 15.0}, {"articles": [], "events": []})
 
         self.assertEqual(result["ai_bull_thesis"], "Tăng trưởng lõi tốt.")
+        self.assertIn("41.000", result["suggested_buy_price"])
+        self.assertIn("12 CP", result["suggested_buy_quantity"])
         self.assertEqual(fake_models.generate_content.call_count, 2)
         called_models = [call.kwargs["model"] for call in fake_models.generate_content.call_args_list]
         self.assertEqual(called_models, ["gemini-3.8-flash", "gemini-3.8-flash"])
