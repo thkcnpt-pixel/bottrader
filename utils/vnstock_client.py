@@ -359,9 +359,81 @@ class VnstockClient:
 
         return result
 
-    # -------------------- 4. Financial Statements (3-Source: VCI GraphQL -> Vietcap IQ REST -> VNDirect/TCBS) --------------------
+    # -------------------- 4. Financial Statements (Vietcap IQ REST -> VCI GraphQL -> Simplize -> TCBS) --------------------
+    def _fetch_bctc_vietcap_iq(self, sym: str) -> Dict[str, Optional[pd.DataFrame]]:
+        """Source 1: Vietcap IQ REST API (all 3 BCTC statements + ratios)."""
+        iq_headers = {
+            "Referer": "https://iq.vietcap.com.vn/",
+            "Origin": "https://iq.vietcap.com.vn",
+        }
+        base = f"https://iq.vietcap.com.vn/api/iq-insight-service/v1/company/{sym}"
+
+        # Ratio summary & quarterly metrics
+        r_ratio = self.session.get(f"{base}/ratio-latest", headers=iq_headers, timeout=8)
+        ratio_data = r_ratio.json().get("data") if r_ratio.status_code == 200 else None
+
+        r_inc = self.session.get(f"{base}/financial-statement", params={"section": "INCOME_STATEMENT"}, headers=iq_headers, timeout=8)
+        inc_quarters = (r_inc.json().get("data") or {}).get("quarters", []) if r_inc.status_code == 200 else []
+
+        r_bal = self.session.get(f"{base}/financial-statement", params={"section": "BALANCE_SHEET"}, headers=iq_headers, timeout=8)
+        bal_quarters = (r_bal.json().get("data") or {}).get("quarters", []) if r_bal.status_code == 200 else []
+
+        r_cf = self.session.get(f"{base}/financial-statement", params={"section": "CASH_FLOW"}, headers=iq_headers, timeout=8)
+        cf_quarters = (r_cf.json().get("data") or {}).get("quarters", []) if r_cf.status_code == 200 else []
+
+        if not inc_quarters and not ratio_data:
+            return {}
+
+        def _parse_quarters(qlist: List[Dict[str, Any]], mapping: Dict[str, Tuple[str, ...]]) -> Optional[pd.DataFrame]:
+            if not qlist:
+                return None
+            out_rows = []
+            for q in qlist[:8]:
+                rec: Dict[str, Any] = {
+                    "yearReport": q.get("yearReport"),
+                    "lengthReport": q.get("lengthReport"),
+                }
+                for out_col, keys in mapping.items():
+                    for k in keys:
+                        if q.get(k) is not None:
+                            rec[out_col] = float(q[k])
+                            break
+                out_rows.append(rec)
+            return pd.DataFrame(out_rows) if out_rows else None
+
+        inc_df = _parse_quarters(inc_quarters, {
+            "revenue": ("isa3", "isb27", "iss3", "revenue"),
+            "post_tax_profit": ("isa22", "isa20", "isb41", "iss22", "netProfit"),
+        })
+        bal_df = _parse_quarters(bal_quarters, {
+            "total assets": ("bsa53", "bsb108", "bss53", "totalAsset"),
+            "liabilities": ("bsa54", "bsb109", "bss54", "totalLiability"),
+            "owner's equity": ("bsa78", "bsb110", "bss78", "totalEquity"),
+        })
+        cf_df = _parse_quarters(cf_quarters, {
+            "operating": ("cfa18", "cfb20", "cfs18", "cfa1", "cfb1"),
+        })
+
+        rat_df = None
+        if isinstance(ratio_data, dict) and ratio_data:
+            rat_df = pd.DataFrame([{
+                "roe": ratio_data.get("roe"),
+                "pe": ratio_data.get("pe"),
+                "pb": ratio_data.get("pb"),
+                "debt_on_equity": ratio_data.get("de") or ratio_data.get("debtToEquity"),
+                "bad_debt": ratio_data.get("badDebtRatio") or ratio_data.get("npl"),
+                "llr": ratio_data.get("llr"),
+            }])
+
+        return {
+            "income_statement": inc_df,
+            "balance_sheet": bal_df,
+            "cash_flow": cf_df,
+            "ratio": rat_df,
+        }
+
     def _fetch_bctc_vci_graphql(self, sym: str) -> Dict[str, Optional[pd.DataFrame]]:
-        """Source 1: Vietcap (VCI) GraphQL quarterly financial ratios (exact schema)."""
+        """Source 2: Vietcap (VCI) GraphQL quarterly financial ratios."""
         query = """
         query CompanyFinancialRatio($ticker: String!, $period: String!) {
           CompanyFinancialRatio(ticker: $ticker, period: $period) {
@@ -384,21 +456,23 @@ class VnstockClient:
           }
         }
         """
-        data = self._request_json(
-            "POST",
-            "https://trading.vietcap.com.vn/data-mt/graphql",
-            json_body={"query": query, "variables": {"ticker": sym, "period": "Q"}},
-        )
-        if isinstance(data, dict) and data.get("errors"):
-            logger.warning("[BCTC] VCI_GRAPHQL errors for %s: %s", sym, data["errors"][0].get("message"))
-            return {}
+        rows = []
+        for period_val in ("QUARTER", "Q"):
+            data = self._request_json(
+                "POST",
+                "https://trading.vietcap.com.vn/data-mt/graphql",
+                json_body={"query": query, "variables": {"ticker": sym, "period": period_val}},
+            )
+            if isinstance(data, dict) and data.get("errors"):
+                continue
+            rows = (
+                ((data or {}).get("data") or {})
+                .get("CompanyFinancialRatio", {})
+                .get("ratio", [])
+            ) or []
+            if rows:
+                break
 
-        rows = (
-            (data or {})
-            .get("data", {})
-            .get("CompanyFinancialRatio", {})
-            .get("ratio", [])
-        )
         if not rows:
             return {}
 
@@ -411,152 +485,46 @@ class VnstockClient:
         bal_cols = [c for c in ("yearReport", "lengthReport", "de", "bvps") if c in df.columns]
         rat_cols = [c for c in ("yearReport", "lengthReport", "roe", "roa", "de", "pe", "pb", "eps") if c in df.columns]
 
-        inc_df = df[inc_cols].rename(columns={"netProfit": "post_tax_profit"}) if inc_cols else None
-        bal_df = df[bal_cols].rename(columns={"de": "debt_on_equity"}) if bal_cols else None
-        rat_df = df[rat_cols].rename(columns={"de": "debt_on_equity"}) if rat_cols else None
-
-        # Best-effort Operating Cash Flow from Vietcap IQ REST endpoint
-        cf_df = None
-        try:
-            cf_resp = self._request_json(
-                "GET",
-                f"https://iq.vietcap.com.vn/api/iq-insight-service/v1/company/{sym}/financial-statement",
-                params={"section": "CASH_FLOW"},
-                headers={"Referer": "https://iq.vietcap.com.vn/", "Origin": "https://iq.vietcap.com.vn"},
-            )
-            cf_years = (cf_resp or {}).get("data", {}).get("quarters", [])
-            if cf_years:
-                cf_rows = []
-                for qrow in cf_years[:8]:
-                    ocf_val = (
-                        qrow.get("cfa1")
-                        or qrow.get("cfb1")
-                        or qrow.get("cfs1")
-                        or qrow.get("cfa18")
-                        or qrow.get("cfb20")
-                    )
-                    if ocf_val is not None:
-                        cf_rows.append({
-                            "yearReport": qrow.get("yearReport"),
-                            "lengthReport": qrow.get("lengthReport"),
-                            "operating": float(ocf_val),
-                        })
-                if cf_rows:
-                    cf_df = pd.DataFrame(cf_rows)
-        except Exception:  # noqa: BLE001
-            pass
-
         return {
-            "income_statement": inc_df,
-            "balance_sheet": bal_df,
-            "cash_flow": cf_df,
-            "ratio": rat_df,
+            "income_statement": df[inc_cols].rename(columns={"netProfit": "post_tax_profit"}) if inc_cols else None,
+            "balance_sheet": df[bal_cols].rename(columns={"de": "debt_on_equity"}) if bal_cols else None,
+            "cash_flow": None,
+            "ratio": df[rat_cols].rename(columns={"de": "debt_on_equity"}) if rat_cols else None,
         }
 
-    def _fetch_bctc_vndirect(self, sym: str) -> Dict[str, Optional[pd.DataFrame]]:
-        """Source 2: VNDirect Finfo API v4 quarterly financial statements & ratios (fast 5s timeout)."""
-        headers = {"Referer": "https://dstock.vndirect.com.vn/"}
-
-        def _get_fast(url: str, params: Dict[str, Any]) -> Any:
-            r = self.session.get(url, params=params, headers=headers, timeout=5)
-            r.raise_for_status()
-            return r.json()
-
-        rat_resp = _get_fast(
-            "https://finfo-api.vndirect.com.vn/v4/ratios",
-            {"q": f"code:{sym}~reportType:QUARTER", "sort": "reportDate:desc", "size": 400},
+    def _fetch_bctc_simplize(self, sym: str) -> Dict[str, Optional[pd.DataFrame]]:
+        """Source 3: Simplize public financial summary API."""
+        resp = self.session.get(
+            f"https://api.simplize.vn/api/company/summary/{sym}",
+            headers={"Referer": "https://simplize.vn/", "Origin": "https://simplize.vn"},
+            timeout=8,
         )
-        rat_rows = rat_resp.get("data", []) if isinstance(rat_resp, dict) else []
-
-        latest_resp = _get_fast(
-            "https://finfo-api.vndirect.com.vn/v4/ratios/latest",
-            {
-                "filter": "ratioCode:PRICE_TO_EARNINGS,PRICE_TO_BOOK,ROAE_TR_AVG5Q,NET_PROFIT_YOY,REVENUE_YOY,DEBT_TO_EQUITY,BAD_DEBT_RATIO,LLR",
-                "where": f"code:{sym}",
-            },
-        )
-        latest_rows = latest_resp.get("data", []) if isinstance(latest_resp, dict) else []
-
-        fs_resp = _get_fast(
-            "https://finfo-api.vndirect.com.vn/v4/financial_statements",
-            {"q": f"code:{sym}~reportType:QUARTER", "sort": "fiscalDate:desc", "size": 600},
-        )
-        fs_rows = fs_resp.get("data", []) if isinstance(fs_resp, dict) else []
-
-        if not rat_rows and not latest_rows and not fs_rows:
+        if resp.status_code != 200:
+            return {}
+        d = (resp.json() or {}).get("data") or {}
+        if not d:
             return {}
 
-        # Pivot financial statement items by fiscalDate
-        by_date: Dict[str, Dict[str, float]] = {}
-        for row in fs_rows:
-            fdate = str(row.get("fiscalDate") or "")[:10]
-            icode = str(row.get("itemCode") or "")
-            val = row.get("numericValue")
-            if not fdate or val is None:
-                continue
-            rec = by_date.setdefault(fdate, {})
-            # Standard Vietnamese accounting itemCodes (non-financial & bank/securities)
-            if icode in ("21001", "20101", "20001"):
-                rec["revenue"] = float(val)
-            elif icode in ("22100", "22000", "20900"):
-                rec["post_tax_profit"] = float(val)
-            elif icode in ("10000", "12700"):
-                rec["total assets"] = float(val)
-            elif icode in ("13000",):
-                rec["liabilities"] = float(val)
-            elif icode in ("14000", "14100"):
-                rec["owner's equity"] = float(val)
-            elif icode in ("31000", "30000", "32000"):
-                rec["operating"] = float(val)
-
-        # Build sorted quarterly rows
-        def _date_to_yq(dstr: str) -> Tuple[int, int]:
-            try:
-                y, m = int(dstr[:4]), int(dstr[5:7])
-                return y, max(1, min(4, (m - 1) // 3 + 1))
-            except Exception:
-                return (0, 0)
-
-        sorted_dates = sorted(by_date.keys(), reverse=True)[:8]
-        fs_table_rows = []
-        for dstr in sorted_dates:
-            y, q = _date_to_yq(dstr)
-            fs_table_rows.append({"yearReport": y, "lengthReport": q, **by_date[dstr]})
-
-        fs_df = pd.DataFrame(fs_table_rows) if fs_table_rows else None
-
-        # Pivot ratios
-        ratio_by_date: Dict[str, Dict[str, float]] = {}
-        code_map = {
-            "ROAE_TR_AVG5Q": "roe",
-            "ROE": "roe",
-            "PRICE_TO_EARNINGS": "pe",
-            "PE": "pe",
-            "PRICE_TO_BOOK": "pb",
-            "PB": "pb",
-            "DEBT_TO_EQUITY": "debt_on_equity",
-            "BAD_DEBT_RATIO": "bad_debt",
-            "LLR": "llr",
-        }
-        for row in rat_rows + latest_rows:
-            rdate = str(row.get("reportDate") or "9999-12-31")[:10]
-            rcode = str(row.get("ratioCode") or "").upper()
-            val = row.get("value")
-            if rcode in code_map and val is not None:
-                ratio_by_date.setdefault(rdate, {})[code_map[rcode]] = float(val)
-
-        sorted_rdates = sorted(ratio_by_date.keys(), reverse=True)[:8]
-        rat_df = pd.DataFrame([ratio_by_date[d] for d in sorted_rdates]) if sorted_rdates else None
-
+        inc_df = pd.DataFrame([{
+            "revenuegrowth": d.get("revenueGrowth"),
+            "netprofitgrowth": d.get("netIncomeGrowth") or d.get("profitGrowth"),
+            "post_tax_profit": d.get("netIncome"),
+        }])
+        rat_df = pd.DataFrame([{
+            "roe": d.get("roe"),
+            "pe": d.get("peRatio"),
+            "pb": d.get("pbRatio"),
+            "debt_on_equity": d.get("debtEquity") or d.get("debtToEquity"),
+        }])
         return {
-            "income_statement": fs_df,
-            "balance_sheet": fs_df,
-            "cash_flow": fs_df if (fs_df is not None and "operating" in fs_df.columns) else None,
+            "income_statement": inc_df,
+            "balance_sheet": rat_df,
+            "cash_flow": None,
             "ratio": rat_df,
         }
 
     def _fetch_bctc_tcbs(self, sym: str) -> Dict[str, Optional[pd.DataFrame]]:
-        """Source 3: TCBS quarterly financial statements & ratios."""
+        """Source 4: TCBS quarterly financial statements & ratios."""
         statements: Dict[str, Optional[pd.DataFrame]] = {
             "income_statement": None,
             "balance_sheet": None,
@@ -571,12 +539,15 @@ class VnstockClient:
         }
         for key, url in tcbs_endpoints.items():
             try:
-                data = self._request_json(
-                    "GET",
+                resp = self.session.get(
                     url,
                     params={"yearly": 0, "isAll": "true"},
                     headers={"Referer": "https://tcinvest.tcbs.com.vn/"},
+                    timeout=6,
                 )
+                if resp.status_code != 200:
+                    continue
+                data = resp.json()
                 rows = data if isinstance(data, list) else (data.get("data", []) if isinstance(data, dict) else [])
                 if rows:
                     df = pd.DataFrame(rows)
@@ -588,13 +559,14 @@ class VnstockClient:
         return statements
 
     def get_financial_statements(self, symbol: str) -> Dict[str, Optional[pd.DataFrame]]:
-        """Fetch quarterly BCTC with 3-source fallback: VCI GraphQL -> VNDirect v4 -> TCBS."""
+        """Fetch quarterly BCTC with 4-source fallback: Vietcap IQ -> VCI GraphQL -> Simplize -> TCBS."""
         sym = symbol.upper().strip()
         empty = {"income_statement": None, "balance_sheet": None, "cash_flow": None, "ratio": None}
 
         for source_name, fetcher in (
+            ("VIETCAP_IQ", self._fetch_bctc_vietcap_iq),
             ("VCI_GRAPHQL", self._fetch_bctc_vci_graphql),
-            ("VNDIRECT_V4", self._fetch_bctc_vndirect),
+            ("SIMPLIZE", self._fetch_bctc_simplize),
             ("TCBS", self._fetch_bctc_tcbs),
         ):
             try:
@@ -603,6 +575,7 @@ class VnstockClient:
                     isinstance(res.get(k), pd.DataFrame) and not res[k].empty
                     for k in ("income_statement", "balance_sheet", "cash_flow", "ratio")
                 ):
+                    logger.info("[BCTC] Loaded %s from %s", sym, source_name)
                     return {**empty, **res}
             except Exception as exc:  # noqa: BLE001
                 logger.warning("[BCTC] %s failed for %s: %s", source_name, sym, exc)
