@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="vi" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#0f172a" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <title>VN Stock Swing Bot — Personal PWA</title>
+  <link rel="manifest" href="./manifest.json" />
+  <link rel="icon" type="image/svg+xml" href="./icons/icon-192.svg" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body class="min-h-screen flex flex-col pb-20">
+
+  <!-- Top Header -->
+  <header class="sticky top-0 z-30 bg-slate-950/90 backdrop-blur border-b border-slate-800 px-4 py-3">
+    <div class="max-w-3xl mx-auto flex items-center justify-between">
+      <div class="flex items-center gap-2.5">
+        <img src="./icons/icon-192.svg" alt="Logo" class="w-8 h-8 rounded-lg" />
+        <div>
+          <h1 class="text-sm font-bold tracking-tight text-white leading-tight">VN Stock Swing Bot</h1>
+          <p class="text-[11px] text-slate-400">HOSE &amp; HNX • Lõi cứng Python + Gemini Phản biện</p>
+        </div>
+      </div>
+      <div id="user-badge" class="hidden items-center gap-2">
+        <span id="user-email-short" class="text-xs text-slate-400 hidden sm:inline"></span>
+        <button id="btn-refresh" title="Làm mới dữ liệu" class="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs">
+          ↻
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Config Missing Banner -->
+  <div id="config-warning" class="hidden max-w-3xl mx-auto w-full px-4 mt-4">
+    <div class="rounded-xl bg-amber-950/70 border border-amber-500/40 p-4 text-xs text-amber-200">
+      <p class="font-semibold text-amber-300 mb-1">⚠️ Chưa cấu hình Firebase Web Config</p>
+      <p>Hãy điền thông tin Firebase project vào <code>frontend/firebase-config.js</code> và <code>frontend/firebase-messaging-sw.js</code> theo <code>SETUP_GUIDE.md</code>.</p>
+    </div>
+  </div>
+
+  <!-- Auth Gate (Firebase Email/Password) -->
+  <main id="auth-view" class="flex-1 flex items-center justify-center px-4 py-8">
+    <div class="w-full max-w-sm glass-card rounded-2xl p-6 shadow-xl">
+      <h2 class="text-lg font-bold text-white mb-1">Đăng nhập cá nhân</h2>
+      <p class="text-xs text-slate-400 mb-5">Chỉ tài khoản chủ sở hữu mới có quyền đọc/ghi dữ liệu Firestore.</p>
+      <form id="login-form" class="space-y-4">
+        <div>
+          <label class="block text-xs text-slate-300 mb-1">Email</label>
+          <input id="login-email" type="email" required autocomplete="email"
+                 placeholder="you@gmail.com"
+                 class="w-full rounded-xl bg-slate-900 border border-slate-700 px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-emerald-500" />
+        </div>
+        <div>
+          <label class="block text-xs text-slate-300 mb-1">Mật khẩu</label>
+          <input id="login-password" type="password" required autocomplete="current-password"
+                 placeholder="••••••••"
+                 class="w-full rounded-xl bg-slate-900 border border-slate-700 px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-emerald-500" />
+        </div>
+        <p id="login-error" class="hidden text-xs text-rose-400"></p>
+        <button type="submit" id="btn-login"
+                class="w-full rounded-xl bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white font-semibold py-2.5 text-sm transition">
+          Đăng nhập
+        </button>
+      </form>
+    </div>
+  </main>
+
+  <!-- Main Authenticated App -->
+  <main id="app-view" class="hidden flex-1 max-w-3xl mx-auto w-full px-4 py-4 space-y-5">
+
+    <!-- ==================== TAB 1: DASHBOARD (BÁO CÁO NGÀY) ==================== -->
+    <section id="tab-dashboard" class="space-y-4">
+      <!-- Report Date Picker -->
+      <div class="flex items-center justify-between gap-2">
+        <h2 class="text-base font-bold text-white">Báo cáo ngày</h2>
+        <select id="report-date-select"
+                class="rounded-lg bg-slate-900 border border-slate-700 px-3 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-emerald-500">
+          <option value="">Đang tải...</option>
+        </select>
+      </div>
+
+      <!-- VN-Index Warning Banner (shown only if warning_flag == true) -->
+      <div id="vnindex-warning-banner" class="hidden rounded-xl bg-rose-950/80 border border-rose-500/60 p-3.5 flex items-start gap-2.5">
+        <span class="text-lg leading-none">🚨</span>
+        <div>
+          <p class="text-sm font-bold text-rose-300">Cảnh báo: VN-Index dưới MA50 — Rủi ro cao</p>
+          <p class="text-xs text-rose-200/80 mt-0.5">Ưu tiên quản trị rủi ro, hạ tỷ trọng hoặc chỉ giải ngân thăm dò rất nhỏ.</p>
+        </div>
+      </div>
+
+      <!-- VN-Index Status Card -->
+      <div id="vnindex-card" class="glass-card rounded-2xl p-4">
+        <div class="flex items-center justify-between">
+          <div>
+            <p class="text-xs text-slate-400 uppercase tracking-wider">VN-INDEX</p>
+            <div class="flex items-baseline gap-2 mt-0.5">
+              <span id="vni-close" class="text-2xl font-bold text-white tabular-nums">--</span>
+              <span id="vni-change" class="text-sm font-semibold tabular-nums">--</span>
+            </div>
+          </div>
+          <div class="text-right">
+            <span id="vni-ma50-badge" class="inline-block px-2.5 py-1 rounded-full text-xs font-semibold bg-slate-800 text-slate-300">--</span>
+            <p id="vni-ma50-val" class="text-[11px] text-slate-400 mt-1 tabular-nums">MA50: --</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Portfolio Alerts from Daily Report -->
+      <div id="daily-portfolio-alerts-wrap" class="hidden space-y-2">
+        <h3 class="text-sm font-bold text-amber-300 flex items-center gap-1.5">
+          <span>⚠️</span> Cảnh báo danh mục hôm nay
+        </h3>
+        <div id="daily-portfolio-alerts-list" class="space-y-2"></div>
+      </div>
+
+      <!-- Buy Candidates -->
+      <div class="space-y-3">
+        <div class="flex items-center justify-between">
+          <h3 class="text-sm font-bold text-white">Mã đạt điểm mua (Tầng 2 + Gemini)</h3>
+          <span id="candidates-count" class="text-xs text-slate-400">0 mã</span>
+        </div>
+        <div id="buy-candidates-list" class="space-y-3">
+          <div class="glass-card rounded-2xl p-6 text-center text-xs text-slate-400">
+            Chưa có dữ liệu báo cáo ngày.
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== TAB 2: PORTFOLIO (DANH MỤC) ==================== -->
+    <section id="tab-portfolio" class="hidden space-y-4">
+      <div class="flex items-center justify-between">
+        <div>
+          <h2 class="text-base font-bold text-white">Danh mục đầu tư</h2>
+          <p class="text-xs text-slate-400">Ghi trực tiếp Firestore • Quản trị MA50 &amp; Trailing Stop</p>
+        </div>
+        <button id="btn-open-add-modal"
+                class="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold transition">
+          + Nhập lệnh
+        </button>
+      </div>
+
+      <!-- Filter Holding / Closed -->
+      <div class="flex gap-2">
+        <button data-pf-filter="holding" class="pf-filter-btn px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600/20 text-emerald-300 border border-emerald-500/40">
+          Đang nắm giữ
+        </button>
+        <button data-pf-filter="closed" class="pf-filter-btn px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800/80 text-slate-400 border border-slate-700">
+          Đã đóng
+        </button>
+      </div>
+
+      <!-- Portfolio Cards -->
+      <div id="portfolio-list" class="space-y-3">
+        <div class="glass-card rounded-2xl p-6 text-center text-xs text-slate-400">
+          Đang tải danh mục...
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== TAB 3: SETTINGS (CÀI ĐẶT & FCM) ==================== -->
+    <section id="tab-settings" class="hidden space-y-4">
+      <h2 class="text-base font-bold text-white">Cài đặt &amp; Thông báo</h2>
+
+      <div class="glass-card rounded-2xl p-4 space-y-3">
+        <div class="flex items-start justify-between gap-3">
+          <div>
+            <h3 class="text-sm font-semibold text-white">Push Notification (FCM)</h3>
+            <p class="text-xs text-slate-400 mt-0.5">
+              Nhận báo cáo 18:00 hàng ngày và cảnh báo khẩn cấp 30 phút/lần cho các mã đang giữ.
+            </p>
+          </div>
+          <span id="fcm-status-badge" class="px-2.5 py-1 rounded-full text-[11px] font-semibold bg-slate-800 text-slate-300 shrink-0">
+            Kiểm tra...
+          </span>
+        </div>
+
+        <button id="btn-enable-fcm"
+                class="w-full rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-semibold py-2.5 text-xs transition">
+          🔔 Bật / Cập nhật Push Notification trên thiết bị này
+        </button>
+        <p id="fcm-feedback" class="hidden text-xs"></p>
+        <p id="fcm-token-count" class="text-[11px] text-slate-400">Số thiết bị đã đăng ký: --</p>
+      </div>
+
+      <div class="glass-card rounded-2xl p-4 space-y-3">
+        <h3 class="text-sm font-semibold text-white">Tài khoản</h3>
+        <p class="text-xs text-slate-400">Đang đăng nhập: <span id="settings-email" class="text-slate-200 font-medium">--</span></p>
+        <button id="btn-logout"
+                class="w-full rounded-xl bg-rose-600/20 hover:bg-rose-600/30 border border-rose-500/40 text-rose-300 font-semibold py-2.5 text-xs transition">
+          Đăng xuất
+        </button>
+      </div>
+    </section>
+
+    <!-- Mandatory Footer -->
+    <footer class="pt-6 pb-4 text-center border-t border-slate-800/70">
+      <p class="text-xs text-slate-500 tracking-wide">Dev by Thkc</p>
+    </footer>
+  </main>
+
+  <!-- Add / Edit Portfolio Modal -->
+  <div id="portfolio-modal" class="hidden fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4">
+    <div class="w-full sm:max-w-md bg-slate-900 border border-slate-700 rounded-t-2xl sm:rounded-2xl p-5 space-y-4 max-h-[90vh] overflow-y-auto">
+      <div class="flex items-center justify-between">
+        <h3 id="modal-title" class="text-base font-bold text-white">Nhập lệnh Mua / Bán</h3>
+        <button id="btn-close-modal" class="text-slate-400 hover:text-white text-lg px-2">✕</button>
+      </div>
+
+      <form id="portfolio-form" class="space-y-3">
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="block text-xs text-slate-300 mb-1">Mã cổ phiếu *</label>
+            <input id="pf-ticker" type="text" required maxlength="5" placeholder="VD: FPT"
+                   class="w-full uppercase rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500" />
+          </div>
+          <div>
+            <label class="block text-xs text-slate-300 mb-1">Sàn</label>
+            <select id="pf-exchange"
+                    class="w-full rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500">
+              <option value="HOSE">HOSE</option>
+              <option value="HNX">HNX</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="block text-xs text-slate-300 mb-1">Giá mua (VNĐ) *</label>
+            <input id="pf-buy-price" type="number" required min="100" step="10" placeholder="25500"
+                   class="w-full rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-white tabular-nums focus:outline-none focus:border-emerald-500" />
+          </div>
+          <div>
+            <label class="block text-xs text-slate-300 mb-1">Số lượng (CP) *</label>
+            <input id="pf-quantity" type="number" required min="1" step="1" placeholder="10"
+                   class="w-full rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-white tabular-nums focus:outline-none focus:border-emerald-500" />
+          </div>
+        </div>
+
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="block text-xs text-slate-300 mb-1">Ngày mua *</label>
+            <input id="pf-buy-date" type="date" required
+                   class="w-full rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500" />
+          </div>
+          <div>
+            <label class="block text-xs text-slate-300 mb-1">Trạng thái</label>
+            <select id="pf-status"
+                    class="w-full rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500">
+              <option value="holding">Đang giữ (holding)</option>
+              <option value="closed">Đã bán hết (closed)</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="flex items-center gap-2 pt-1">
+          <input id="pf-sold-half" type="checkbox" class="w-4 h-4 accent-emerald-500 rounded" />
+          <label for="pf-sold-half" class="text-xs text-slate-300">Đã chốt 1/2 khóa lãi (bật Trailing Stop -8%)</label>
+        </div>
+
+        <div>
+          <label class="block text-xs text-slate-300 mb-1">Ghi chú (lý do mua / kế hoạch)</label>
+          <textarea id="pf-notes" rows="2" placeholder="Pullback MA20, mua lô lẻ trên ZaloPay/DNSE..."
+                    class="w-full rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-xs text-white focus:outline-none focus:border-emerald-500"></textarea>
+        </div>
+
+        <div class="flex gap-2 pt-2">
+          <button type="submit"
+                  class="flex-1 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold py-2.5 text-sm transition">
+            Lưu vào Firestore
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Mobile Bottom Navigation -->
+  <nav id="bottom-nav" class="hidden fixed bottom-0 inset-x-0 z-30 bg-slate-950/95 backdrop-blur border-t border-slate-800">
+    <div class="max-w-3xl mx-auto grid grid-cols-3">
+      <button data-tab="dashboard" class="tab-btn active flex flex-col items-center py-2.5 text-slate-400">
+        <span class="text-base leading-none">📊</span>
+        <span class="text-[11px] font-medium mt-1">Báo cáo</span>
+        <span class="tab-indicator w-6 h-0.5 bg-emerald-400 rounded-full mt-1"></span>
+      </button>
+      <button data-tab="portfolio" class="tab-btn flex flex-col items-center py-2.5 text-slate-400">
+        <span class="text-base leading-none">💼</span>
+        <span class="text-[11px] font-medium mt-1">Danh mục</span>
+        <span class="tab-indicator w-6 h-0.5 bg-emerald-400 rounded-full mt-1"></span>
+      </button>
+      <button data-tab="settings" class="tab-btn flex flex-col items-center py-2.5 text-slate-400">
+        <span class="text-base leading-none">🔔</span>
+        <span class="text-[11px] font-medium mt-1">Cài đặt</span>
+        <span class="tab-indicator w-6 h-0.5 bg-emerald-400 rounded-full mt-1"></span>
+      </button>
+    </div>
+  </nav>
+
+  <!-- Foreground Toast Notification -->
+  <div id="toast" class="hidden fixed top-16 right-4 left-4 sm:left-auto sm:w-80 z-50 rounded-xl bg-slate-800 border border-emerald-500/50 p-3.5 shadow-2xl text-xs text-white"></div>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

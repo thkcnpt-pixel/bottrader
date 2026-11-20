@@ -1,0 +1,46 @@
+name: "Tier 1: Update Weekly Fundamentals (HOSE & HNX)"
+
+on:
+  schedule:
+    # Chủ nhật lúc 20:00 (UTC+7) = Chủ nhật 13:00 UTC
+    - cron: "0 13 * * 0"
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "Giới hạn số mã quét (0 = toàn sàn)"
+        required: false
+        default: "0"
+
+concurrency:
+  group: update-fundamentals
+  cancel-in-progress: false
+
+jobs:
+  update-fundamentals:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Tier 1 Fundamental Screener
+        env:
+          FIREBASE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
+          VNSTOCK_PRIMARY_SOURCE: VCI
+          VNSTOCK_FALLBACK_SOURCE: TCBS
+          PYTHONPATH: .
+        run: |
+          LIMIT="${{ github.event.inputs.limit || '0' }}"
+          python scripts/update_fundamentals.py --limit "${LIMIT}"

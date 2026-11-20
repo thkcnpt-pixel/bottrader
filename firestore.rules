@@ -1,0 +1,38 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // THAY ĐỔI email bên dưới thành email tài khoản Firebase Auth cá nhân của bạn
+    function isOwner() {
+      return request.auth != null
+        && request.auth.token.email == "thkcnpt@gmail.com";
+    }
+
+    // 1. fundamentals/{ticker}: PWA chỉ cần đọc, Backend (Admin SDK) bypass rules để ghi
+    match /fundamentals/{ticker} {
+      allow read: if isOwner();
+      allow write: if false;
+    }
+
+    // 2. portfolio/{ticker}: Chủ sở hữu đọc/ghi trực tiếp lệnh Mua/Bán/Chốt 1/2
+    match /portfolio/{ticker} {
+      allow read, write: if isOwner();
+    }
+
+    // 3. daily_reports/{date}: PWA chỉ cần đọc báo cáo ngày
+    match /daily_reports/{reportDate} {
+      allow read: if isOwner();
+      allow write: if false;
+    }
+
+    // 4. settings/{docId}: Chủ sở hữu đọc/ghi FCM tokens (settings/fcm_tokens)
+    match /settings/{docId} {
+      allow read, write: if isOwner();
+    }
+
+    // 5. intraday_alerts_state/{date}: Trạng thái chống spam nội bộ của Backend
+    match /intraday_alerts_state/{date} {
+      allow read: if isOwner();
+      allow write: if false;
+    }
+  }
+}
