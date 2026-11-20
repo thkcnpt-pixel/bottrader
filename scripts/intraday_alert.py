@@ -95,6 +95,21 @@ def run_intraday_alert() -> None:
         except Exception as exc:  # noqa: BLE001
             logger.warning("Could not compute MA50/Vol_MA20 for %s: %s", ticker, exc)
 
+        # Update live price & MA50 in Firestore portfolio so PWA/APK always displays fresh prices
+        buy_price = float(pos.get("buy_price") or 0.0)
+        old_high = float(pos.get("highest_price") or buy_price)
+        pnl_pct = ((current_price - buy_price) / buy_price * 100.0) if buy_price > 0 else 0.0
+        pf_updates = {
+            "latest_price": round(current_price, 0),
+            "latest_pnl_pct": round(pnl_pct, 2),
+            "last_checked": vn_now().strftime("%Y-%m-%d %H:%M"),
+        }
+        if ma50_actual > 0:
+            pf_updates["latest_ma50"] = round(ma50_actual, 0)
+        if current_price > old_high:
+            pf_updates["highest_price"] = round(current_price, 0)
+        fb.update_portfolio_fields(ticker, pf_updates)
+
         alerts = evaluate_intraday_alert(
             ticker=ticker,
             exchange=exchange,

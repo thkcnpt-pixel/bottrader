@@ -208,6 +208,8 @@ function bindEvents() {
     await refreshAllData();
   });
 
+  $("btn-live-price").addEventListener("click", handleFetchInstantPrices);
+
   // Bottom tabs
   document.querySelectorAll(".tab-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -1261,6 +1263,96 @@ async function handleRegisterFcmToken() {
   } finally {
     btn.disabled = false;
     btn.textContent = "🔔 Bật / Cập nhật Push Notification trên thiết bị này";
+  }
+}
+
+// -------------------- Instant On-Demand Live Price Refresh --------------------
+async function fetchLivePriceForTicker(ticker) {
+  const sym = ticker.toUpperCase();
+  const nowSec = Math.floor(Date.now() / 1000);
+  const fromSec = nowSec - 10 * 86400;
+
+  // Source 1: VNDirect dchart history (latest close/intraday bar, CORS-friendly)
+  try {
+    const url = `https://dchart-api.vndirect.com.vn/dchart/history?resolution=D&symbol=${encodeURIComponent(sym)}&from=${fromSec}&to=${nowSec}`;
+    const resp = await fetch(url);
+    if (resp.ok) {
+      const data = await resp.json();
+      if (data && Array.isArray(data.c) && data.c.length > 0) {
+        let p = Number(data.c[data.c.length - 1]);
+        if (p > 0 && p < 1000) p = Math.round(p * 1000);
+        if (p > 0) return Math.round(p);
+      }
+    }
+  } catch (err) {
+    console.warn("dchart fallback error for", sym, err);
+  }
+
+  // Source 2: VNDirect finfo stock_prices
+  try {
+    const url = `https://finfo-api.vndirect.com.vn/v4/stock_prices?sort=date&q=code:${encodeURIComponent(sym)}&size=1`;
+    const resp = await fetch(url);
+    if (resp.ok) {
+      const data = await resp.json();
+      const row = data?.data?.[0];
+      if (row) {
+        let p = Number(row.close || row.adClose || 0);
+        if (p > 0 && p < 1000) p = Math.round(p * 1000);
+        if (p > 0) return Math.round(p);
+      }
+    }
+  } catch (err) {
+    console.warn("finfo fallback error for", sym, err);
+  }
+
+  return null;
+}
+
+async function handleFetchInstantPrices() {
+  const btn = $("btn-live-price");
+  const holdings = portfolioItems.filter((p) => (p.status || "holding") === "holding");
+  if (holdings.length === 0) {
+    showToast("Chưa có mã nào đang nắm giữ trong Danh mục.");
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = "⏳ Đang lấy giá...";
+  let updatedCount = 0;
+
+  try {
+    const nowLabel = new Date().toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" });
+    await Promise.all(
+      holdings.map(async (item) => {
+        const livePrice = await fetchLivePriceForTicker(item.ticker);
+        if (!livePrice) return;
+        const buyPrice = Number(item.buy_price || 0);
+        const oldHigh = Number(item.highest_price || buyPrice);
+        const pnlPct = buyPrice > 0 ? Number((((livePrice - buyPrice) / buyPrice) * 100).toFixed(2)) : 0;
+        const updates = {
+          latest_price: livePrice,
+          latest_pnl_pct: pnlPct,
+          last_checked: `${todayIso()} ${nowLabel}`,
+        };
+        if (livePrice > oldHigh) updates.highest_price = livePrice;
+        await setDoc(doc(db, "portfolio", item.ticker), updates, { merge: true });
+        updatedCount += 1;
+      })
+    );
+
+    if (updatedCount > 0) {
+      await loadPortfolio();
+      renderAccountSummary();
+      renderPortfolio();
+      showToast(`✅ Đã cập nhật giá trực tiếp cho ${updatedCount}/${holdings.length} mã!`);
+    } else {
+      showToast("⚠️ Không kéo được giá trực tiếp (mạng/CORS). Hãy dùng dữ liệu từ Bot 30 phút/lần.");
+    }
+  } catch (err) {
+    showToast("Lỗi lấy giá: " + (err.message || err));
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "⚡ Giá ngay";
   }
 }
 

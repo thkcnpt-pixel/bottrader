@@ -1,4 +1,8 @@
-"""Resilient vnstock v3 client with automatic VCI -> TCBS fallback and retries."""
+"""Direct HTTP Vietnam Stock Market Client (VCI -> VNDirect -> TCBS fallback).
+
+Uses pure `requests` against official public endpoints (zero dependency on the
+quarantined PyPI `vnstock` package) with automatic retries and multi-source fallback.
+"""
 
 from __future__ import annotations
 
@@ -9,6 +13,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+import requests
 
 from utils.config import (
     ALLOWED_EXCHANGES,
@@ -20,13 +25,21 @@ from utils.config import (
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+    ),
+    "Accept": "application/json, text/plain, */*",
+    "Referer": "https://trading.vietcap.com.vn/",
+    "Origin": "https://trading.vietcap.com.vn",
+}
+
+REQUEST_TIMEOUT = 15
+
 
 def _normalize_vnd_price(val: float, is_index: bool = False) -> float:
-    """Normalize vnstock price units.
-
-    VCI/TCBS often return stock prices in thousands of VND (e.g., 25.5 == 25,500 VND).
-    Index values (e.g., VNINDEX ~ 1250) should NOT be multiplied.
-    """
+    """Normalize stock prices to VND (multiply by 1000 if returned in thousand-VND units)."""
     if is_index or pd.isna(val):
         return float(val) if not pd.isna(val) else 0.0
     v = float(val)
@@ -45,40 +58,65 @@ def _classify_sector_group(industry_text: str) -> str:
 
 
 class VnstockClient:
-    """Wrapper around vnstock with automatic VCI -> TCBS fallback & retry."""
+    """Resilient VN stock data client with VCI -> VNDirect -> TCBS automatic fallback."""
 
     def __init__(
         self,
         primary_source: str = VNSTOCK_PRIMARY_SOURCE,
         fallback_source: str = VNSTOCK_FALLBACK_SOURCE,
         max_retries: int = 2,
-        retry_delay: float = 1.5,
+        retry_delay: float = 1.2,
     ) -> None:
-        self.sources = [primary_source]
-        if fallback_source and fallback_source != primary_source:
-            self.sources.append(fallback_source)
+        ordered = [primary_source, "VNDIRECT", fallback_source]
+        self.sources = list(dict.fromkeys([s for s in ordered if s]))
         self.max_retries = max_retries
         self.retry_delay = retry_delay
+        self.session = requests.Session()
+        self.session.headers.update(DEFAULT_HEADERS)
+
+    def _request_json(
+        self,
+        method: str,
+        url: str,
+        *,
+        params: Optional[Dict[str, Any]] = None,
+        json_body: Optional[Dict[str, Any]] = None,
+        headers: Optional[Dict[str, str]] = None,
+    ) -> Any:
+        resp = self.session.request(
+            method=method,
+            url=url,
+            params=params,
+            json=json_body,
+            headers=headers,
+            timeout=REQUEST_TIMEOUT,
+        )
+        resp.raise_for_status()
+        return resp.json()
 
     def _call_with_fallback(
         self,
         action_name: str,
-        fn_factory: Callable[[str], Any],
+        handlers: Dict[str, Callable[[], Any]],
     ) -> Tuple[Any, Optional[str]]:
-        """Execute fn_factory(source) trying primary source first, then fallback."""
         last_err: Optional[Exception] = None
         for source in self.sources:
+            fn = handlers.get(source)
+            if fn is None:
+                continue
             for attempt in range(1, self.max_retries + 1):
                 try:
-                    result = fn_factory(source)
-                    if result is not None:
-                        if isinstance(result, pd.DataFrame) and result.empty:
-                            raise ValueError(f"Empty DataFrame returned from {source}")
-                        return result, source
+                    res = fn()
+                    if res is not None:
+                        if isinstance(res, pd.DataFrame) and res.empty:
+                            raise ValueError(f"Empty DataFrame from {source}")
+                        if isinstance(res, (list, dict)) and len(res) == 0:
+                            raise ValueError(f"Empty payload from {source}")
+                        return res, source
                 except Exception as exc:  # noqa: BLE001
                     last_err = exc
                     logger.warning(
-                        "[vnstock] %s failed on source=%s (attempt %d/%d): %s",
+                        "[market_api] %s failed on %s (%d/%d): %s",
                         action_name,
                         source,
                         attempt,
@@ -87,155 +125,170 @@ class VnstockClient:
                     )
                     if attempt < self.max_retries:
                         time.sleep(self.retry_delay * attempt)
-            logger.info("[vnstock] Switching fallback source after %s failed for %s", source, action_name)
-
-        logger.error("[vnstock] All sources failed for %s: %s", action_name, last_err)
+        logger.error("[market_api] All sources failed for %s: %s", action_name, last_err)
         return None, None
 
-    @staticmethod
-    def _get_stock(symbol: str, source: str):
-        from vnstock import Vnstock  # lazy import for fast startup & testability
-
-        return Vnstock().stock(symbol=symbol, source=source)
-
+    # -------------------- 1. Listing (HOSE & HNX) --------------------
     def get_listed_symbols(self) -> List[Dict[str, str]]:
-        """Fetch all normal-listed HOSE & HNX stocks with exchange and sector_group."""
-        def _fetch(source: str) -> pd.DataFrame:
-            stock = self._get_stock("VNM", source)
-            df_ex = stock.listing.symbols_by_exchange()
-            if df_ex is None or df_ex.empty:
-                df_ex = stock.listing.all_symbols()
-            try:
-                df_ind = stock.listing.symbols_by_industries()
-            except Exception:  # noqa: BLE001
-                df_ind = pd.DataFrame()
-            return (df_ex, df_ind)
-
-        res, used_source = self._call_with_fallback("get_listed_symbols", _fetch)
-        if res is None:
-            return []
-
-        df_ex, df_ind = res
-        df_ex = df_ex.copy()
-        df_ex.columns = [str(c).strip().lower() for c in df_ex.columns]
-
-        sym_col = next((c for c in ("symbol", "ticker", "code") if c in df_ex.columns), None)
-        ex_col = next((c for c in ("exchange", "comgroupcode", "board", "market") if c in df_ex.columns), None)
-        type_col = next((c for c in ("type", "organ_type", "stock_type") if c in df_ex.columns), None)
-        status_col = next((c for c in ("status", "trading_status", "warning", "delisted") if c in df_ex.columns), None)
-
-        if not sym_col:
-            logger.error("Could not identify symbol column in listing DataFrame: %s", list(df_ex.columns))
-            return []
-
-        # Build industry lookup map
-        industry_map: Dict[str, str] = {}
-        if isinstance(df_ind, pd.DataFrame) and not df_ind.empty:
-            df_ind = df_ind.copy()
-            df_ind.columns = [str(c).strip().lower() for c in df_ind.columns]
-            ind_sym = next((c for c in ("symbol", "ticker") if c in df_ind.columns), None)
-            ind_cols = [c for c in ("icb_name2", "icb_name3", "icb_name4", "industry", "sector") if c in df_ind.columns]
-            if ind_sym and ind_cols:
-                for _, row in df_ind.iterrows():
-                    s = str(row[ind_sym]).strip().upper()
-                    joined = " ".join(str(row[c]) for c in ind_cols if pd.notna(row[c]))
-                    industry_map[s] = joined
-
-        results: List[Dict[str, str]] = []
-        seen = set()
-
-        for _, row in df_ex.iterrows():
-            ticker = str(row[sym_col]).strip().upper()
-            # Standard VN equities are 3-character alphabetic tickers (excludes ETFs/CW/bonds)
-            if not ticker or len(ticker) != 3 or not ticker.isalpha() or ticker in seen:
-                continue
-
-            exchange_raw = str(row[ex_col]).strip().upper() if ex_col and pd.notna(row[ex_col]) else ""
-            if exchange_raw in ("HSX", "HOSE"):
-                exchange = "HOSE"
-            elif exchange_raw == "HNX":
-                exchange = "HNX"
-            else:
-                continue
-
-            if exchange not in ALLOWED_EXCHANGES:
-                continue
-
-            # Exclude non-stock securities if type column is present
-            if type_col and pd.notna(row[type_col]):
-                t_val = str(row[type_col]).strip().upper()
-                if t_val not in ("STOCK", "CP", "EQUITY", ""):
+        """Fetch normal-listed HOSE & HNX equities with sector classification."""
+        def _vci() -> List[Dict[str, str]]:
+            data = self._request_json("GET", "https://trading.vietcap.com.vn/api/price/symbols/getAll")
+            items = data if isinstance(data, list) else data.get("data", [])
+            out: List[Dict[str, str]] = []
+            seen = set()
+            for row in items:
+                ticker = str(row.get("symbol") or "").strip().upper()
+                if len(ticker) != 3 or not ticker.isalpha() or ticker in seen:
                     continue
-
-            # Exclude warned / controlled / restricted / halted stocks
-            if status_col and pd.notna(row[status_col]):
-                st = str(row[status_col]).strip().lower()
-                bad_flags = ("warn", "control", "restrict", "halt", "suspend", "delist", "cảnh báo", "kiểm soát", "hạn chế")
-                if any(flag in st for flag in bad_flags):
+                board = str(row.get("board") or "").strip().upper()
+                if board in ("HSX", "HOSE"):
+                    exchange = "HOSE"
+                elif board == "HNX":
+                    exchange = "HNX"
+                else:
                     continue
+                if str(row.get("type") or "STOCK").upper() not in ("STOCK", ""):
+                    continue
+                industry = str(row.get("icbName2") or row.get("icbName3") or row.get("organName") or "")
+                seen.add(ticker)
+                out.append({
+                    "ticker": ticker,
+                    "exchange": exchange,
+                    "industry": industry,
+                    "sector_group": _classify_sector_group(industry),
+                    "source": "VCI",
+                })
+            return out
 
-            industry_str = industry_map.get(ticker, "")
-            seen.add(ticker)
-            results.append({
-                "ticker": ticker,
-                "exchange": exchange,
-                "industry": industry_str,
-                "sector_group": _classify_sector_group(industry_str),
-                "source": used_source or "",
-            })
+        def _vndirect() -> List[Dict[str, str]]:
+            data = self._request_json(
+                "GET",
+                "https://finfo-api.vndirect.com.vn/v4/stocks",
+                params={"q": "type:STOCK~status:LISTED~floor:HOSE,HNX", "size": 2000},
+                headers={"Referer": "https://dstock.vndirect.com.vn/"},
+            )
+            items = data.get("data", []) if isinstance(data, dict) else []
+            out: List[Dict[str, str]] = []
+            seen = set()
+            for row in items:
+                ticker = str(row.get("code") or "").strip().upper()
+                if len(ticker) != 3 or not ticker.isalpha() or ticker in seen:
+                    continue
+                floor = str(row.get("floor") or "").strip().upper()
+                if floor not in ALLOWED_EXCHANGES:
+                    continue
+                industry = str(row.get("industryName") or row.get("companyName") or "")
+                seen.add(ticker)
+                out.append({
+                    "ticker": ticker,
+                    "exchange": floor,
+                    "industry": industry,
+                    "sector_group": _classify_sector_group(industry),
+                    "source": "VNDIRECT",
+                })
+            return out
 
-        logger.info("Loaded %d eligible HOSE/HNX tickers (source=%s)", len(results), used_source)
-        return results
+        res, used = self._call_with_fallback("get_listed_symbols", {"VCI": _vci, "VNDIRECT": _vndirect})
+        if not res:
+            return []
+        logger.info("Loaded %d eligible HOSE/HNX tickers (source=%s)", len(res), used)
+        return res
 
+    # -------------------- 2. Daily OHLCV History --------------------
     def get_ohlcv(
         self,
         symbol: str,
         days: int = 160,
         is_index: bool = False,
     ) -> Optional[pd.DataFrame]:
-        """Fetch daily OHLCV history (adjusted prices for indicators).
-
-        Returns a DataFrame sorted ascending by `time` with columns:
-        `time`, `open`, `high`, `low`, `close`, `volume`.
-        """
+        """Fetch daily OHLCV history (adjusted prices for indicators)."""
         end_dt = vn_now()
         start_dt = end_dt - timedelta(days=days)
-        start_str = start_dt.strftime("%Y-%m-%d")
-        end_str = end_dt.strftime("%Y-%m-%d")
+        ts_start = int(start_dt.timestamp())
+        ts_end = int(end_dt.timestamp())
+        sym = symbol.upper().strip()
 
-        def _fetch(source: str) -> pd.DataFrame:
-            stock = self._get_stock(symbol, source)
-            return stock.quote.history(start=start_str, end=end_str, interval="1D")
+        def _vci() -> pd.DataFrame:
+            payload = {
+                "timeFrame": "ONE_DAY",
+                "symbols": [sym],
+                "to": ts_end,
+                "countBack": max(60, int(days * 0.75)),
+            }
+            data = self._request_json(
+                "POST",
+                "https://trading.vietcap.com.vn/api/chart/OHLCChart/gap-chart",
+                json_body=payload,
+            )
+            item = data[0] if isinstance(data, list) and data else {}
+            times = item.get("t", [])
+            if not times:
+                return pd.DataFrame()
+            df = pd.DataFrame({
+                "time": pd.to_datetime([int(x) for x in times], unit="s"),
+                "open": item.get("o", []),
+                "high": item.get("h", []),
+                "low": item.get("l", []),
+                "close": item.get("c", []),
+                "volume": item.get("v", []),
+            })
+            return df
 
-        df, _ = self._call_with_fallback(f"get_ohlcv({symbol})", _fetch)
+        def _vndirect() -> pd.DataFrame:
+            data = self._request_json(
+                "GET",
+                "https://dchart-api.vndirect.com.vn/dchart/history",
+                params={"resolution": "D", "symbol": sym, "from": ts_start, "to": ts_end},
+                headers={"Referer": "https://dchart.vndirect.com.vn/"},
+            )
+            times = data.get("t", []) if isinstance(data, dict) else []
+            if not times:
+                return pd.DataFrame()
+            return pd.DataFrame({
+                "time": pd.to_datetime([int(x) for x in times], unit="s"),
+                "open": data.get("o", []),
+                "high": data.get("h", []),
+                "low": data.get("l", []),
+                "close": data.get("c", []),
+                "volume": data.get("v", []),
+            })
+
+        def _tcbs() -> pd.DataFrame:
+            bar_type = "index" if is_index else "stock"
+            data = self._request_json(
+                "GET",
+                "https://apipubaws.tcbs.com.vn/stock-insight/v2/stock/bars-long-term",
+                params={"ticker": sym, "type": bar_type, "resolution": "D", "from": ts_start, "to": ts_end},
+                headers={"Referer": "https://tcinvest.tcbs.com.vn/"},
+            )
+            rows = data.get("data", []) if isinstance(data, dict) else []
+            if not rows:
+                return pd.DataFrame()
+            df = pd.DataFrame(rows)
+            df.rename(columns={"tradingDate": "time"}, inplace=True)
+            df["time"] = pd.to_datetime(df["time"])
+            return df[["time", "open", "high", "low", "close", "volume"]]
+
+        df, _ = self._call_with_fallback(
+            f"get_ohlcv({sym})",
+            {"VCI": _vci, "VNDIRECT": _vndirect, "TCBS": _tcbs},
+        )
         if df is None or df.empty:
             return None
 
         out = df.copy()
-        out.columns = [str(c).strip().lower() for c in out.columns]
-        if "time" not in out.columns and "date" in out.columns:
-            out.rename(columns={"date": "time"}, inplace=True)
-
-        required = {"time", "open", "high", "low", "close", "volume"}
-        if not required.issubset(set(out.columns)):
-            return None
-
-        out["time"] = pd.to_datetime(out["time"])
+        out["time"] = pd.to_datetime(out["time"]).dt.tz_localize(None)
         out = out.sort_values("time").drop_duplicates(subset=["time"]).reset_index(drop=True)
-
         for col in ("open", "high", "low", "close"):
             out[col] = pd.to_numeric(out[col], errors="coerce").apply(
                 lambda x: _normalize_vnd_price(x, is_index=is_index)
             )
         out["volume"] = pd.to_numeric(out["volume"], errors="coerce").fillna(0.0)
-        out = out.dropna(subset=["close"]).reset_index(drop=True)
-        return out
+        return out.dropna(subset=["close"]).reset_index(drop=True)
 
+    # -------------------- 3. Actual / Live Price Board --------------------
     def get_actual_prices_batch(self, symbols: List[str]) -> Dict[str, Dict[str, float]]:
-        """Fetch actual (unadjusted) latest prices & reference prices via trading.price_board.
-
-        Returns map: ticker -> {actual_close, ref_price, volume, exchange}
-        """
+        """Fetch latest actual (unadjusted) match/close prices & ref prices."""
         if not symbols:
             return {}
 
@@ -243,62 +296,73 @@ class VnstockClient:
         chunk_size = 50
 
         for i in range(0, len(symbols), chunk_size):
-            chunk = symbols[i : i + chunk_size]
+            chunk = [s.upper().strip() for s in symbols[i : i + chunk_size]]
 
-            def _fetch(source: str, batch=chunk) -> pd.DataFrame:
-                stock = self._get_stock(batch[0], source)
-                return stock.trading.price_board(symbols_list=batch)
+            def _vci(batch=chunk) -> Dict[str, Dict[str, float]]:
+                data = self._request_json(
+                    "POST",
+                    "https://trading.vietcap.com.vn/api/price/symbols/getList",
+                    json_body={"symbols": batch},
+                )
+                rows = data if isinstance(data, list) else data.get("data", [])
+                parsed: Dict[str, Dict[str, float]] = {}
+                for row in rows:
+                    listing = row.get("listingInfo") or {}
+                    match = row.get("matchPrice") or {}
+                    t = str(listing.get("symbol") or row.get("symbol") or "").strip().upper()
+                    if not t:
+                        continue
+                    mp = match.get("matchPrice") or match.get("closePrice") or 0
+                    rp = listing.get("refPrice") or match.get("referencePrice") or mp
+                    vol = match.get("accumulatedVolume") or match.get("matchVol") or 0
+                    actual_p = _normalize_vnd_price(float(mp)) if mp else _normalize_vnd_price(float(rp))
+                    ref_p = _normalize_vnd_price(float(rp)) if rp else actual_p
+                    if actual_p > 0:
+                        parsed[t] = {
+                            "actual_close": float(actual_p),
+                            "ref_price": float(ref_p),
+                            "volume": float(vol or 0),
+                        }
+                return parsed
 
-            df, _ = self._call_with_fallback(f"price_board({len(chunk)})", _fetch)
-            if df is None or df.empty:
-                continue
+            def _vndirect(batch=chunk) -> Dict[str, Dict[str, float]]:
+                codes = ",".join(batch)
+                data = self._request_json(
+                    "GET",
+                    "https://finfo-api.vndirect.com.vn/v4/stock_prices",
+                    params={"sort": "date", "q": f"code:{codes}", "size": len(batch) * 2},
+                    headers={"Referer": "https://dstock.vndirect.com.vn/"},
+                )
+                rows = data.get("data", []) if isinstance(data, dict) else []
+                parsed: Dict[str, Dict[str, float]] = {}
+                for row in rows:
+                    t = str(row.get("code") or "").strip().upper()
+                    if not t or t in parsed:
+                        continue
+                    close_p = _normalize_vnd_price(float(row.get("close") or 0))
+                    ref_p = _normalize_vnd_price(float(row.get("basicPrice") or close_p))
+                    vol = float(row.get("nmVolume") or row.get("volume") or 0)
+                    if close_p > 0:
+                        parsed[t] = {
+                            "actual_close": close_p,
+                            "ref_price": ref_p,
+                            "volume": vol,
+                        }
+                return parsed
 
-            flat = df.copy()
-            if isinstance(flat.columns, pd.MultiIndex):
-                flat.columns = [
-                    "_".join(str(p).strip().lower() for p in col if str(p).strip())
-                    for col in flat.columns.values
-                ]
-            else:
-                flat.columns = [str(c).strip().lower() for c in flat.columns]
-
-            sym_col = next((c for c in flat.columns if "symbol" in c or "ticker" in c), None)
-            price_col = next(
-                (c for c in flat.columns if any(k in c for k in ("match_price", "close_price", "match_match_price", "last_price"))),
-                None,
+            batch_res, _ = self._call_with_fallback(
+                f"price_board({len(chunk)})",
+                {"VCI": _vci, "VNDIRECT": _vndirect},
             )
-            ref_col = next(
-                (c for c in flat.columns if any(k in c for k in ("ref_price", "reference", "prior_close"))),
-                None,
-            )
-            vol_col = next(
-                (c for c in flat.columns if any(k in c for k in ("total_volume", "accumulated_volume", "match_vol", "volume"))),
-                None,
-            )
-
-            if not sym_col:
-                continue
-
-            for _, row in flat.iterrows():
-                t = str(row[sym_col]).strip().upper()
-                match_p = pd.to_numeric(row[price_col], errors="coerce") if price_col else np.nan
-                ref_p = pd.to_numeric(row[ref_col], errors="coerce") if ref_col else np.nan
-                vol = pd.to_numeric(row[vol_col], errors="coerce") if vol_col else 0.0
-
-                actual_p = _normalize_vnd_price(match_p) if not pd.isna(match_p) and match_p > 0 else _normalize_vnd_price(ref_p)
-                ref_norm = _normalize_vnd_price(ref_p) if not pd.isna(ref_p) and ref_p > 0 else actual_p
-
-                if actual_p > 0:
-                    result[t] = {
-                        "actual_close": float(actual_p),
-                        "ref_price": float(ref_norm),
-                        "volume": float(vol) if not pd.isna(vol) else 0.0,
-                    }
+            if isinstance(batch_res, dict):
+                result.update(batch_res)
 
         return result
 
+    # -------------------- 4. Financial Statements (3 BCTC + Ratios) --------------------
     def get_financial_statements(self, symbol: str) -> Dict[str, Optional[pd.DataFrame]]:
-        """Fetch all 3 quarterly financial statements + ratio table (4-8 quarters)."""
+        """Fetch quarterly Income Statement, Balance Sheet, Cash Flow & Ratios (4-8 quarters)."""
+        sym = symbol.upper().strip()
         statements: Dict[str, Optional[pd.DataFrame]] = {
             "income_statement": None,
             "balance_sheet": None,
@@ -306,66 +370,78 @@ class VnstockClient:
             "ratio": None,
         }
 
-        for key, method_name in (
-            ("income_statement", "income_statement"),
-            ("balance_sheet", "balance_sheet"),
-            ("cash_flow", "cash_flow"),
-            ("ratio", "ratio"),
-        ):
-            def _fetch(source: str, m=method_name) -> pd.DataFrame:
-                stock = self._get_stock(symbol, source)
-                fn = getattr(stock.finance, m)
-                return fn(period="quarter", lang="en")
+        tcbs_endpoints = {
+            "income_statement": f"https://apipubaws.tcbs.com.vn/tcanalysis/v1/finance/{sym}/incomestatement",
+            "balance_sheet": f"https://apipubaws.tcbs.com.vn/tcanalysis/v1/finance/{sym}/balancesheet",
+            "cash_flow": f"https://apipubaws.tcbs.com.vn/tcanalysis/v1/finance/{sym}/cashflow",
+            "ratio": f"https://apipubaws.tcbs.com.vn/tcanalysis/v1/finance/{sym}/financialratio",
+        }
 
-            df, _ = self._call_with_fallback(f"{symbol}.{key}", _fetch)
-            if isinstance(df, pd.DataFrame) and not df.empty:
-                clean = df.copy()
-                if isinstance(clean.columns, pd.MultiIndex):
-                    clean.columns = [
-                        "_".join(str(p).strip() for p in col if str(p).strip())
-                        for col in clean.columns.values
-                    ]
-                statements[key] = clean.head(8)
+        for key, url in tcbs_endpoints.items():
+            try:
+                data = self._request_json(
+                    "GET",
+                    url,
+                    params={"yearly": 0, "isAll": "true"},
+                    headers={"Referer": "https://tcinvest.tcbs.com.vn/"},
+                )
+                rows = data if isinstance(data, list) else (data.get("data", []) if isinstance(data, dict) else [])
+                if rows:
+                    df = pd.DataFrame(rows)
+                    # Sort newest quarter first
+                    if "year" in df.columns and "quarter" in df.columns:
+                        df = df.sort_values(["year", "quarter"], ascending=[False, False]).reset_index(drop=True)
+                    statements[key] = df.head(8)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("TCBS %s failed for %s: %s", key, sym, exc)
 
         return statements
 
+    # -------------------- 5. Company News & Dividend Events --------------------
     def get_company_news_and_events(self, symbol: str) -> Dict[str, List[Dict[str, Any]]]:
-        """Fetch recent company news and corporate events/dividends from vnstock."""
+        """Fetch recent company news and corporate events/dividends from TCBS."""
+        sym = symbol.upper().strip()
         news_items: List[Dict[str, Any]] = []
         event_items: List[Dict[str, Any]] = []
 
-        def _fetch_news(source: str):
-            stock = self._get_stock(symbol, source)
-            return stock.company.news()
-
-        df_news, _ = self._call_with_fallback(f"{symbol}.company.news", _fetch_news)
-        if isinstance(df_news, pd.DataFrame) and not df_news.empty:
-            for _, row in df_news.head(8).iterrows():
-                row_d = {str(k).lower(): v for k, v in row.to_dict().items()}
-                title = str(row_d.get("news_title") or row_d.get("title") or "").strip()
+        try:
+            data = self._request_json(
+                "GET",
+                f"https://apipubaws.tcbs.com.vn/tcanalysis/v1/ticker/{sym}/activity-news",
+                params={"page": 0, "size": 8},
+                headers={"Referer": "https://tcinvest.tcbs.com.vn/"},
+            )
+            rows = data.get("listActivityNews", []) if isinstance(data, dict) else []
+            for row in rows[:8]:
+                title = str(row.get("title") or "").strip()
                 if title:
                     news_items.append({
                         "title": title,
-                        "date": str(row_d.get("public_date") or row_d.get("publish_date") or ""),
-                        "url": str(row_d.get("news_source_link") or row_d.get("url") or ""),
-                        "source": "vnstock",
-                        "summary": str(row_d.get("news_short_content") or row_d.get("summary") or ""),
+                        "date": str(row.get("publishDate") or ""),
+                        "url": str(row.get("source") or ""),
+                        "source": "TCBS",
+                        "summary": str(row.get("title") or ""),
                     })
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("TCBS news failed for %s: %s", sym, exc)
 
-        def _fetch_events(source: str):
-            stock = self._get_stock(symbol, source)
-            return stock.company.events()
-
-        df_events, _ = self._call_with_fallback(f"{symbol}.company.events", _fetch_events)
-        if isinstance(df_events, pd.DataFrame) and not df_events.empty:
-            for _, row in df_events.head(6).iterrows():
-                row_d = {str(k).lower(): v for k, v in row.to_dict().items()}
+        try:
+            data = self._request_json(
+                "GET",
+                f"https://apipubaws.tcbs.com.vn/tcanalysis/v1/ticker/{sym}/events-news",
+                params={"page": 0, "size": 6},
+                headers={"Referer": "https://tcinvest.tcbs.com.vn/"},
+            )
+            rows = data.get("listEventNews", []) if isinstance(data, dict) else []
+            for row in rows[:6]:
                 event_items.append({
-                    "title": str(row_d.get("event_title") or row_d.get("event_list_name") or row_d.get("event_desc") or ""),
-                    "exright_date": str(row_d.get("exright_date") or ""),
-                    "issue_date": str(row_d.get("issue_date") or ""),
-                    "ratio": str(row_d.get("ratio") or ""),
-                    "value": str(row_d.get("value") or ""),
+                    "title": str(row.get("eventName") or row.get("eventDesc") or ""),
+                    "exright_date": str(row.get("exerRightDate") or ""),
+                    "issue_date": str(row.get("pubDate") or ""),
+                    "ratio": str(row.get("ratio") or ""),
+                    "value": str(row.get("value") or ""),
                 })
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("TCBS events failed for %s: %s", sym, exc)
 
         return {"news": news_items, "events": event_items}
