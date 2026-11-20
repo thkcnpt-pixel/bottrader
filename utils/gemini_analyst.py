@@ -1,12 +1,11 @@
-"""Gemini Flash API Risk Critic (Tier 4).
+"""Gemini Flash API 3-Perspective AI Debate & Risk Critic (Tier 4).
 
 Design rules:
   - NEVER vetoes or removes a stock candidate.
-  - Returns structured JSON with exactly 4 fields:
-      1. profit_quality
-      2. negative_news
-      3. dividend_trap
-      4. biggest_risk
+  - Token-efficient single-call Structured Debate (~3,500 tokens/ticker = <1% Free Tier daily quota):
+      * AI 1 (Phe Bò — Cơ bản & Động lực): ai_bull_thesis
+      * AI 2 (Phe Gấu — Phản biện rủi ro): profit_quality, negative_news, dividend_trap, biggest_risk
+      * AI 3 (Trọng tài — Chốt phương án tốt nhất cho vốn 500k): ai_referee_verdict
   - Sleeps 5s between calls to respect Free Tier RPM limits.
   - Uses gemini-2.5-flash with automatic fallback to gemini-2.0-flash.
 """
@@ -31,27 +30,35 @@ logger = logging.getLogger(__name__)
 
 
 class RiskCritiqueSchema(BaseModel):
+    ai_bull_thesis: str = Field(
+        description="[AI 1 - Phe Bò] Luận điểm ủng hộ mua mạnh nhất từ BCTC lõi, tăng trưởng & kỹ thuật (2-3 câu ngắn gọn bằng tiếng Việt)."
+    )
     profit_quality: str = Field(
-        description="Lợi nhuận đến từ kinh doanh lõi hay đột biến 1 lần? Trả lời ngắn gọn 2-3 câu bằng tiếng Việt."
+        description="[AI 2 - Phe Gấu] Lợi nhuận đến từ kinh doanh lõi hay đột biến 1 lần? (2-3 câu bằng tiếng Việt)."
     )
     negative_news: str = Field(
-        description="Có tin xấu, kiện tụng, thanh tra hay lãnh đạo bán ra không? Trả lời ngắn gọn 2-3 câu bằng tiếng Việt."
+        description="[AI 2 - Phe Gấu] Có tin xấu, kiện tụng, thanh tra hay lãnh đạo bán ra không? (2-3 câu bằng tiếng Việt)."
     )
     dividend_trap: str = Field(
-        description="Có sắp chia cổ tức bằng cổ phiếu/phát hành thêm gây kẹt lô lẻ cho tài khoản vốn 500k không? Trả lời ngắn gọn 2-3 câu bằng tiếng Việt."
+        description="[AI 2 - Phe Gấu] Có sắp chia cổ tức bằng cổ phiếu/phát hành thêm gây kẹt lô lẻ vốn 500k không? (2-3 câu bằng tiếng Việt)."
     )
     biggest_risk: str = Field(
-        description="Rủi ro lớn nhất nếu mua mã này trong 1-3 tháng tới là gì? Trả lời ngắn gọn 2-3 câu bằng tiếng Việt."
+        description="[AI 2 - Phe Gấu] Rủi ro lớn nhất nếu mua mã này trong 1-3 tháng tới là gì? (2-3 câu bằng tiếng Việt)."
+    )
+    ai_referee_verdict: str = Field(
+        description="[AI 3 - Trọng tài] Tổng kết phản biện giữa AI 1 và AI 2: chốt phương án hành động tốt nhất, điều kiện giải ngân hoặc hủy kèo cho nhà đầu tư vốn nhỏ 500k (2-3 câu thực chiến bằng tiếng Việt)."
     )
 
 
 def _fallback_critique(reason: str) -> Dict[str, str]:
     msg = f"Chưa thể gọi Gemini API ({reason}). Vui lòng kiểm tra tin tức & lịch cổ tức thủ công trước khi đặt lệnh."
     return {
+        "ai_bull_thesis": msg,
         "profit_quality": msg,
         "negative_news": msg,
         "dividend_trap": msg,
         "biggest_risk": msg,
+        "ai_referee_verdict": msg,
     }
 
 
@@ -80,8 +87,10 @@ def _build_prompt(
 
     bctc_json = json.dumps(fundamental_summary, ensure_ascii=False, indent=2)
 
-    return f"""Bạn là chuyên gia phản biện rủi ro chứng khoán Việt Nam (phong cách Swing / Trung hạn 1-3 tháng, nhà đầu tư cá nhân vốn nhỏ ~500.000 VNĐ giao dịch lô lẻ).
-Nhiệm vụ của bạn KHÔNG phải khuyến nghị mua/bán, mà là SOI RỦI RO khách quan, sắc bén cho mã cổ phiếu **{ticker}** dựa trên dữ liệu dưới đây.
+    return f"""Hãy mô phỏng **Hội đồng 3 chuyên gia AI phản biện chéo nhau** về mã cổ phiếu **{ticker}** (chứng khoán Việt Nam, phong cách Swing 1-3 tháng, nhà đầu tư vốn nhỏ ~500.000 VNĐ giao dịch lô lẻ):
+- **AI 1 (Phe Bò — Cơ bản & Tăng trưởng):** Nêu luận điểm thuyết phục nhất để mua mã {ticker}.
+- **AI 2 (Phe Gấu — Phản biện gay gắt):** Đập lại AI 1 bằng cách soi kỹ 4 rủi ro cốt lõi (chất lượng lợi nhuận, tin xấu/lãnh đạo bán, bẫy cổ tức/kẹt lô lẻ, rủi ro lớn nhất 1-3 tháng).
+- **AI 3 (Trọng tài — Chốt phương án tốt nhất):** Cân bằng lập luận của cả AI 1 và AI 2 để rút ra kết luận thực chiến nhất (điểm cần theo dõi, kịch bản quản trị rủi ro). Không tự ý loại mã.
 
 === 1. TÓM TẮT BCTC 4-8 QUÝ GẦN NHẤT ===
 {bctc_json}
@@ -92,16 +101,18 @@ Nhiệm vụ của bạn KHÔNG phải khuyến nghị mua/bán, mà là SOI R�
 === 3. TIN TỨC MỚI NHẤT ===
 {news_text}
 
-Hãy trả về JSON đúng 4 trường bằng tiếng Việt súc tích, thực tế (mỗi trường 2-3 câu, nêu rõ con số hoặc sự kiện nếu có; nếu không có thông tin xấu hãy ghi rõ "Chưa ghi nhận..."):
-1. profit_quality: Lợi nhuận đến từ hoạt động kinh doanh lõi hay đột biến 1 lần (tài chính, bán tài sản)?
-2. negative_news: Có tin xấu, kiện tụng, thanh tra, phạt thuế hay lãnh đạo đăng ký bán ra không?
-3. dividend_trap: Có sắp chia cổ tức bằng cổ phiếu / phát hành thêm quyền mua gây kẹt cổ phiếu lô lẻ hoặc pha loãng không?
-4. biggest_risk: Rủi ro lớn nhất nếu mua nắm giữ mã {ticker} trong 1-3 tháng tới là gì?
+Trả về JSON đúng 6 trường bằng tiếng Việt súc tích, nêu rõ số liệu nếu có:
+1. ai_bull_thesis
+2. profit_quality
+3. negative_news
+4. dividend_trap
+5. biggest_risk
+6. ai_referee_verdict
 """
 
 
 class GeminiAnalyst:
-    """Thin wrapper over google-genai for structured JSON risk critique."""
+    """Thin wrapper over google-genai for structured 3-AI debate JSON critique."""
 
     def __init__(
         self,
@@ -123,12 +134,11 @@ class GeminiAnalyst:
         fundamental_summary: Dict[str, Any],
         news_bundle: Dict[str, Any],
     ) -> Dict[str, str]:
-        """Generate structured 4-field risk critique JSON for a ticker."""
+        """Generate structured 3-AI debate JSON critique for a ticker."""
         if not self.api_key:
             logger.warning("GEMINI_API_KEY not set — returning fallback critique for %s", ticker)
             return _fallback_critique("thiếu GEMINI_API_KEY")
 
-        # Rate-limit protection between consecutive API calls
         if self._call_count > 0 and self.sleep_seconds > 0:
             logger.info("Sleeping %.1fs before next Gemini API call...", self.sleep_seconds)
             time.sleep(self.sleep_seconds)
@@ -153,16 +163,18 @@ class GeminiAnalyst:
                     config=types.GenerateContentConfig(
                         response_mime_type="application/json",
                         response_schema=RiskCritiqueSchema,
-                        temperature=0.2,
+                        temperature=0.25,
                     ),
                 )
                 raw_text = (response.text or "").strip()
                 parsed = json.loads(raw_text)
                 return {
+                    "ai_bull_thesis": str(parsed.get("ai_bull_thesis", "Không có dữ liệu.")),
                     "profit_quality": str(parsed.get("profit_quality", "Không có dữ liệu.")),
                     "negative_news": str(parsed.get("negative_news", "Không có dữ liệu.")),
                     "dividend_trap": str(parsed.get("dividend_trap", "Không có dữ liệu.")),
                     "biggest_risk": str(parsed.get("biggest_risk", "Không có dữ liệu.")),
+                    "ai_referee_verdict": str(parsed.get("ai_referee_verdict", "Không có dữ liệu.")),
                 }
             except Exception as exc:  # noqa: BLE001
                 last_err = str(exc)

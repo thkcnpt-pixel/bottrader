@@ -209,6 +209,9 @@ function bindEvents() {
   });
 
   $("btn-live-price").addEventListener("click", handleFetchInstantPrices);
+  $("btn-rescan-candidates").addEventListener("click", handleTriggerRescanCandidates);
+  $("gh-token-form").addEventListener("submit", handleSaveGhToken);
+  loadGhTokenStatus();
 
   // Bottom tabs
   document.querySelectorAll(".tab-btn").forEach((btn) => {
@@ -477,26 +480,45 @@ function renderDailyReport(report) {
 
           <details class="group rounded-xl bg-slate-950/70 border border-slate-800 p-3">
             <summary class="cursor-pointer text-xs font-semibold text-sky-300 flex items-center justify-between list-none">
-              <span>🤖 Phản biện rủi ro từ Gemini AI (4 tiêu chí)</span>
+              <span>🤖 Hội đồng 3 AI phản biện (Bò vs Gấu vs Trọng tài)</span>
               <span class="text-slate-400 group-open:rotate-180 transition">▾</span>
             </summary>
             <div class="mt-3 space-y-2.5 text-xs border-t border-slate-800 pt-3">
-              <div>
-                <p class="font-semibold text-emerald-300">1. Chất lượng lợi nhuận (Core vs Đột biến)</p>
-                <p class="text-slate-300 mt-0.5 leading-relaxed">${escapeHtml(g.profit_quality || "Chưa có dữ liệu.")}</p>
+              ${
+                g.ai_bull_thesis
+                  ? `<div class="rounded-lg bg-emerald-950/40 border border-emerald-500/30 p-2.5">
+                      <p class="font-semibold text-emerald-300">🐂 AI 1 (Phe Bò — Luận điểm ủng hộ)</p>
+                      <p class="text-slate-200 mt-0.5 leading-relaxed">${escapeHtml(g.ai_bull_thesis)}</p>
+                    </div>`
+                  : ""
+              }
+              <div class="rounded-lg bg-rose-950/30 border border-rose-500/25 p-2.5 space-y-2">
+                <p class="font-semibold text-rose-300">🐻 AI 2 (Phe Gấu — Phản biện 4 rủi ro cốt lõi)</p>
+                <div>
+                  <p class="font-medium text-emerald-200">1. Chất lượng lợi nhuận (Core vs Đột biến)</p>
+                  <p class="text-slate-300 mt-0.5 leading-relaxed">${escapeHtml(g.profit_quality || "Chưa có dữ liệu.")}</p>
+                </div>
+                <div>
+                  <p class="font-medium text-rose-200">2. Tin xấu / Kiện tụng / Lãnh đạo bán ra</p>
+                  <p class="text-slate-300 mt-0.5 leading-relaxed">${escapeHtml(g.negative_news || "Chưa có dữ liệu.")}</p>
+                </div>
+                <div>
+                  <p class="font-medium text-amber-200">3. Bẫy cổ tức cổ phiếu / Phát hành thêm (Lô lẻ)</p>
+                  <p class="text-slate-300 mt-0.5 leading-relaxed">${escapeHtml(g.dividend_trap || "Chưa có dữ liệu.")}</p>
+                </div>
+                <div>
+                  <p class="font-medium text-sky-200">4. Rủi ro lớn nhất 1–3 tháng tới</p>
+                  <p class="text-slate-300 mt-0.5 leading-relaxed">${escapeHtml(g.biggest_risk || "Chưa có dữ liệu.")}</p>
+                </div>
               </div>
-              <div>
-                <p class="font-semibold text-rose-300">2. Tin xấu / Kiện tụng / Lãnh đạo bán ra</p>
-                <p class="text-slate-300 mt-0.5 leading-relaxed">${escapeHtml(g.negative_news || "Chưa có dữ liệu.")}</p>
-              </div>
-              <div>
-                <p class="font-semibold text-amber-300">3. Bẫy cổ tức cổ phiếu / Phát hành thêm (Lô lẻ)</p>
-                <p class="text-slate-300 mt-0.5 leading-relaxed">${escapeHtml(g.dividend_trap || "Chưa có dữ liệu.")}</p>
-              </div>
-              <div>
-                <p class="font-semibold text-sky-300">4. Rủi ro lớn nhất 1–3 tháng tới</p>
-                <p class="text-slate-300 mt-0.5 leading-relaxed">${escapeHtml(g.biggest_risk || "Chưa có dữ liệu.")}</p>
-              </div>
+              ${
+                g.ai_referee_verdict
+                  ? `<div class="rounded-lg bg-sky-950/40 border border-sky-500/30 p-2.5">
+                      <p class="font-semibold text-sky-300">⚖️ AI 3 (Trọng tài — Chốt phương án cho vốn 500k)</p>
+                      <p class="text-slate-200 mt-0.5 leading-relaxed">${escapeHtml(g.ai_referee_verdict)}</p>
+                    </div>`
+                  : ""
+              }
             </div>
           </details>
         </article>`;
@@ -1370,6 +1392,84 @@ async function handleFetchInstantPrices() {
   } finally {
     btn.disabled = false;
     btn.textContent = "⚡ Giá ngay";
+  }
+}
+
+// -------------------- On-Demand Potential Stock Rescan (GitHub Actions Dispatch) --------------------
+const GH_TOKEN_STORAGE_KEY = "swingbot_gh_actions_token";
+
+function loadGhTokenStatus() {
+  const token = localStorage.getItem(GH_TOKEN_STORAGE_KEY) || "";
+  const statusEl = $("gh-token-status");
+  if (!statusEl) return;
+  if (token) {
+    statusEl.textContent = "✅ Đã lưu token cục bộ trên máy này. Bạn có thể bấm '🔍 Quét tiềm năng' bất cứ lúc nào.";
+    statusEl.className = "text-[11px] text-emerald-400";
+  } else {
+    statusEl.textContent = "Chưa lưu token trên máy này.";
+    statusEl.className = "text-[11px] text-slate-400";
+  }
+}
+
+function handleSaveGhToken(e) {
+  e.preventDefault();
+  const val = $("set-gh-token").value.trim();
+  if (!val) {
+    localStorage.removeItem(GH_TOKEN_STORAGE_KEY);
+    showToast("Đã xóa GitHub Token khỏi máy này.");
+  } else {
+    localStorage.setItem(GH_TOKEN_STORAGE_KEY, val);
+    $("set-gh-token").value = "";
+    showToast("✅ Đã lưu GitHub Token cục bộ! Bạn có thể bấm '🔍 Quét tiềm năng' ngay.");
+  }
+  loadGhTokenStatus();
+}
+
+async function handleTriggerRescanCandidates() {
+  const token = localStorage.getItem(GH_TOKEN_STORAGE_KEY) || "";
+  if (!token) {
+    showToast("Vào Tab Cài đặt → dán GitHub Token (quyền Actions: Write) để bật nút Quét tiềm năng ngay!", 6000);
+    // Switch user smoothly to Settings tab
+    document.querySelector('.tab-btn[data-tab="settings"]')?.click();
+    return;
+  }
+
+  const btn = $("btn-rescan-candidates");
+  btn.disabled = true;
+  btn.textContent = "⏳ Đang quét...";
+
+  try {
+    const resp = await fetch(
+      "https://api.github.com/repos/thkcnpt-pixel/bottrader/actions/workflows/daily_scan.yml/dispatches",
+      {
+        method: "POST",
+        headers: {
+          Accept: "application/vnd.github+json",
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ ref: "main" }),
+      }
+    );
+
+    if (resp.status === 204 || resp.ok) {
+      showToast("🚀 Bot đang quét mã tiềm năng + Hội đồng 3 AI phản biện (~35 giây)...", 6000);
+      setTimeout(async () => {
+        await refreshAllData();
+        showToast("✅ Đã đồng bộ báo cáo mã tiềm năng mới nhất!");
+      }, 38000);
+    } else {
+      const errText = await resp.text();
+      showToast(`Lỗi kích hoạt quét (${resp.status}): kiểm tra lại quyền Actions: Write của Token.`, 6000);
+      console.warn("Workflow dispatch error:", resp.status, errText);
+    }
+  } catch (err) {
+    showToast("Lỗi kết nối GitHub API: " + (err.message || err));
+  } finally {
+    setTimeout(() => {
+      btn.disabled = false;
+      btn.textContent = "🔍 Quét tiềm năng";
+    }, 5000);
   }
 }
 

@@ -359,24 +359,202 @@ class VnstockClient:
 
         return result
 
-    # -------------------- 4. Financial Statements (3 BCTC + Ratios) --------------------
-    def get_financial_statements(self, symbol: str) -> Dict[str, Optional[pd.DataFrame]]:
-        """Fetch quarterly Income Statement, Balance Sheet, Cash Flow & Ratios (4-8 quarters)."""
-        sym = symbol.upper().strip()
+    # -------------------- 4. Financial Statements (3-Source: VCI GraphQL -> VNDirect v4 -> TCBS) --------------------
+    def _fetch_bctc_vci_graphql(self, sym: str) -> Dict[str, Optional[pd.DataFrame]]:
+        """Source 1: Vietcap (VCI) GraphQL quarterly financial ratios & statements."""
+        query = """
+        query CompanyFinancialRatio($ticker: String!, $period: String!) {
+          CompanyFinancialRatio(ticker: $ticker, period: $period) {
+            ratio {
+              yearReport
+              lengthReport
+              revenue
+              revenueGrowth
+              netProfit
+              netProfitGrowth
+              roe
+              roa
+              de
+              pe
+              pb
+              eps
+              bvps
+              ebitda
+              ocf
+              badDebt
+              llr
+              totalAsset
+              totalEquity
+              totalLiability
+            }
+          }
+        }
+        """
+        data = self._request_json(
+            "POST",
+            "https://trading.vietcap.com.vn/data-mt/graphql",
+            json_body={"query": query, "variables": {"ticker": sym, "period": "Q"}},
+        )
+        rows = (
+            (data or {})
+            .get("data", {})
+            .get("CompanyFinancialRatio", {})
+            .get("ratio", [])
+        )
+        if not rows:
+            return {}
+
+        df = pd.DataFrame(rows)
+        if "yearReport" in df.columns and "lengthReport" in df.columns:
+            df = df.sort_values(["yearReport", "lengthReport"], ascending=[False, False]).reset_index(drop=True)
+        df = df.head(8)
+
+        # Map into the 4 standard statement tables expected by Tier 1 scorer
+        inc_cols = [c for c in ("yearReport", "lengthReport", "revenue", "netProfit", "revenueGrowth", "netProfitGrowth") if c in df.columns]
+        bal_cols = [c for c in ("yearReport", "lengthReport", "totalAsset", "totalEquity", "totalLiability", "de") if c in df.columns]
+        cf_cols = [c for c in ("yearReport", "lengthReport", "ocf") if c in df.columns]
+        rat_cols = [c for c in ("yearReport", "lengthReport", "roe", "roa", "de", "pe", "pb", "badDebt", "llr") if c in df.columns]
+
+        inc_df = df[inc_cols].rename(columns={"netProfit": "post_tax_profit"}) if inc_cols else None
+        bal_df = df[bal_cols].rename(columns={"totalAsset": "total assets", "totalEquity": "owner's equity", "totalLiability": "liabilities"}) if bal_cols else None
+        cf_df = df[cf_cols].rename(columns={"ocf": "operating"}) if cf_cols and df["ocf"].notna().any() else None
+        rat_df = df[rat_cols].rename(columns={"de": "debt_on_equity", "badDebt": "bad_debt"}) if rat_cols else None
+
+        return {
+            "income_statement": inc_df,
+            "balance_sheet": bal_df,
+            "cash_flow": cf_df,
+            "ratio": rat_df,
+        }
+
+    def _fetch_bctc_vndirect(self, sym: str) -> Dict[str, Optional[pd.DataFrame]]:
+        """Source 2: VNDirect Finfo API v4 quarterly financial statements & ratios."""
+        headers = {"Referer": "https://dstock.vndirect.com.vn/"}
+
+        # 1. Fetch ratios across recent quarters
+        rat_resp = self._request_json(
+            "GET",
+            "https://finfo-api.vndirect.com.vn/v4/ratios",
+            params={
+                "q": f"code:{sym}~reportType:QUARTER",
+                "sort": "reportDate:desc",
+                "size": 400,
+            },
+            headers=headers,
+        )
+        rat_rows = rat_resp.get("data", []) if isinstance(rat_resp, dict) else []
+
+        # 2. Fetch latest snapshot ratios (P/E, P/B, ROE, D/E, YoY growth, NPL)
+        latest_resp = self._request_json(
+            "GET",
+            "https://finfo-api.vndirect.com.vn/v4/ratios/latest",
+            params={
+                "filter": "ratioCode:PRICE_TO_EARNINGS,PRICE_TO_BOOK,ROAE_TR_AVG5Q,NET_PROFIT_YOY,REVENUE_YOY,DEBT_TO_EQUITY,BAD_DEBT_RATIO,LLR",
+                "where": f"code:{sym}",
+            },
+            headers=headers,
+        )
+        latest_rows = latest_resp.get("data", []) if isinstance(latest_resp, dict) else []
+
+        # 3. Fetch quarterly financial statement line items (Income, Balance Sheet, Cash Flow)
+        fs_resp = self._request_json(
+            "GET",
+            "https://finfo-api.vndirect.com.vn/v4/financial_statements",
+            params={
+                "q": f"code:{sym}~reportType:QUARTER",
+                "sort": "fiscalDate:desc",
+                "size": 600,
+            },
+            headers=headers,
+        )
+        fs_rows = fs_resp.get("data", []) if isinstance(fs_resp, dict) else []
+
+        if not rat_rows and not latest_rows and not fs_rows:
+            return {}
+
+        # Pivot financial statement items by fiscalDate
+        by_date: Dict[str, Dict[str, float]] = {}
+        for row in fs_rows:
+            fdate = str(row.get("fiscalDate") or "")[:10]
+            icode = str(row.get("itemCode") or "")
+            val = row.get("numericValue")
+            if not fdate or val is None:
+                continue
+            rec = by_date.setdefault(fdate, {})
+            # Standard Vietnamese accounting itemCodes (non-financial & bank/securities)
+            if icode in ("21001", "20101", "20001"):
+                rec["revenue"] = float(val)
+            elif icode in ("22100", "22000", "20900"):
+                rec["post_tax_profit"] = float(val)
+            elif icode in ("10000", "12700"):
+                rec["total assets"] = float(val)
+            elif icode in ("13000",):
+                rec["liabilities"] = float(val)
+            elif icode in ("14000", "14100"):
+                rec["owner's equity"] = float(val)
+            elif icode in ("31000", "30000", "32000"):
+                rec["operating"] = float(val)
+
+        # Build sorted quarterly rows
+        def _date_to_yq(dstr: str) -> Tuple[int, int]:
+            try:
+                y, m = int(dstr[:4]), int(dstr[5:7])
+                return y, max(1, min(4, (m - 1) // 3 + 1))
+            except Exception:
+                return (0, 0)
+
+        sorted_dates = sorted(by_date.keys(), reverse=True)[:8]
+        fs_table_rows = []
+        for dstr in sorted_dates:
+            y, q = _date_to_yq(dstr)
+            fs_table_rows.append({"yearReport": y, "lengthReport": q, **by_date[dstr]})
+
+        fs_df = pd.DataFrame(fs_table_rows) if fs_table_rows else None
+
+        # Pivot ratios
+        ratio_by_date: Dict[str, Dict[str, float]] = {}
+        code_map = {
+            "ROAE_TR_AVG5Q": "roe",
+            "ROE": "roe",
+            "PRICE_TO_EARNINGS": "pe",
+            "PE": "pe",
+            "PRICE_TO_BOOK": "pb",
+            "PB": "pb",
+            "DEBT_TO_EQUITY": "debt_on_equity",
+            "BAD_DEBT_RATIO": "bad_debt",
+            "LLR": "llr",
+        }
+        for row in rat_rows + latest_rows:
+            rdate = str(row.get("reportDate") or "9999-12-31")[:10]
+            rcode = str(row.get("ratioCode") or "").upper()
+            val = row.get("value")
+            if rcode in code_map and val is not None:
+                ratio_by_date.setdefault(rdate, {})[code_map[rcode]] = float(val)
+
+        sorted_rdates = sorted(ratio_by_date.keys(), reverse=True)[:8]
+        rat_df = pd.DataFrame([ratio_by_date[d] for d in sorted_rdates]) if sorted_rdates else None
+
+        return {
+            "income_statement": fs_df,
+            "balance_sheet": fs_df,
+            "cash_flow": fs_df if (fs_df is not None and "operating" in fs_df.columns) else None,
+            "ratio": rat_df,
+        }
+
+    def _fetch_bctc_tcbs(self, sym: str) -> Dict[str, Optional[pd.DataFrame]]:
+        """Source 3: TCBS quarterly financial statements & ratios."""
         statements: Dict[str, Optional[pd.DataFrame]] = {
             "income_statement": None,
             "balance_sheet": None,
             "cash_flow": None,
             "ratio": None,
         }
-
         tcbs_endpoints = {
             "income_statement": f"https://apipubaws.tcbs.com.vn/tcanalysis/v1/finance/{sym}/incomestatement",
             "balance_sheet": f"https://apipubaws.tcbs.com.vn/tcanalysis/v1/finance/{sym}/balancesheet",
             "cash_flow": f"https://apipubaws.tcbs.com.vn/tcanalysis/v1/finance/{sym}/cashflow",
             "ratio": f"https://apipubaws.tcbs.com.vn/tcanalysis/v1/finance/{sym}/financialratio",
         }
-
         for key, url in tcbs_endpoints.items():
             try:
                 data = self._request_json(
@@ -388,14 +566,34 @@ class VnstockClient:
                 rows = data if isinstance(data, list) else (data.get("data", []) if isinstance(data, dict) else [])
                 if rows:
                     df = pd.DataFrame(rows)
-                    # Sort newest quarter first
                     if "year" in df.columns and "quarter" in df.columns:
                         df = df.sort_values(["year", "quarter"], ascending=[False, False]).reset_index(drop=True)
                     statements[key] = df.head(8)
             except Exception as exc:  # noqa: BLE001
                 logger.debug("TCBS %s failed for %s: %s", key, sym, exc)
-
         return statements
+
+    def get_financial_statements(self, symbol: str) -> Dict[str, Optional[pd.DataFrame]]:
+        """Fetch quarterly BCTC with 3-source fallback: VCI GraphQL -> VNDirect v4 -> TCBS."""
+        sym = symbol.upper().strip()
+        empty = {"income_statement": None, "balance_sheet": None, "cash_flow": None, "ratio": None}
+
+        for source_name, fetcher in (
+            ("VCI_GRAPHQL", self._fetch_bctc_vci_graphql),
+            ("VNDIRECT_V4", self._fetch_bctc_vndirect),
+            ("TCBS", self._fetch_bctc_tcbs),
+        ):
+            try:
+                res = fetcher(sym)
+                if res and any(
+                    isinstance(res.get(k), pd.DataFrame) and not res[k].empty
+                    for k in ("income_statement", "balance_sheet", "cash_flow", "ratio")
+                ):
+                    return {**empty, **res}
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[BCTC] %s failed for %s: %s", source_name, sym, exc)
+
+        return empty
 
     # -------------------- 5. Company News & Dividend Events --------------------
     def get_company_news_and_events(self, symbol: str) -> Dict[str, List[Dict[str, Any]]]:

@@ -192,7 +192,14 @@ class TestNewsAndGeminiAndFrontendRules(unittest.TestCase):
         res = analyst.analyze_risk("FPT", {}, {"articles": [], "events": []})
         self.assertEqual(
             set(res.keys()),
-            {"profit_quality", "negative_news", "dividend_trap", "biggest_risk"},
+            {
+                "ai_bull_thesis",
+                "profit_quality",
+                "negative_news",
+                "dividend_trap",
+                "biggest_risk",
+                "ai_referee_verdict",
+            },
         )
 
     def test_frontend_ui_constraints(self):

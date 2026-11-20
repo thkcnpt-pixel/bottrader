@@ -320,12 +320,20 @@ def extract_fundamental_metrics(
         rev_yoy_pct = (sum(revs[:4]) - sum(revs[4:8])) / abs(sum(revs[4:8])) * 100.0
     elif len(revs) >= 5 and abs(revs[4]) > 1e-6:
         rev_yoy_pct = (revs[0] - revs[4]) / abs(revs[4]) * 100.0
+    else:
+        rg = _safe_series(inc, ("revenuegrowth", "revenue_yoy"))
+        if rg:
+            rev_yoy_pct = _normalize_pct(rg[0])
 
     profit_yoy_pct: Optional[float] = None
     if len(profits) >= 8 and abs(sum(profits[4:8])) > 1e-6:
         profit_yoy_pct = (sum(profits[:4]) - sum(profits[4:8])) / abs(sum(profits[4:8])) * 100.0
     elif len(profits) >= 5 and abs(profits[4]) > 1e-6:
         profit_yoy_pct = (profits[0] - profits[4]) / abs(profits[4]) * 100.0
+    else:
+        pg = _safe_series(inc, ("netprofitgrowth", "net_profit_yoy"))
+        if pg:
+            profit_yoy_pct = _normalize_pct(pg[0])
 
     # Operating Cash Flow (TTM 4 quarters) & OCF / Net Profit
     ocfs = _safe_series(
