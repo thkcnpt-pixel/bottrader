@@ -33,7 +33,12 @@ const $ = (id) => document.getElementById(id);
 
 function fmtVnd(val) {
   if (val === null || val === undefined || Number.isNaN(Number(val))) return "--";
-  return Number(val).toLocaleString("vi-VN") + " đ";
+  return Math.round(Number(val)).toLocaleString("vi-VN") + " đ";
+}
+
+function fmtSignedVnd(val) {
+  const n = Math.round(Number(val || 0));
+  return `${n >= 0 ? "+" : ""}${n.toLocaleString("vi-VN")} đ`;
 }
 
 function fmtNum(val, digits = 2) {
@@ -47,6 +52,14 @@ function escapeHtml(str) {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+}
+
+function todayIso() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function currentMonthKey() {
+  return new Date().toISOString().slice(0, 7); // YYYY-MM
 }
 
 function showToast(msg, durationMs = 4500) {
@@ -63,17 +76,64 @@ let auth = null;
 let messaging = null;
 let swReg = null;
 let reportsCache = {};
+let latestReport = null;
 let portfolioItems = [];
 let currentPfFilter = "holding";
+
+const DEFAULT_ACCOUNT = {
+  cash_balance: 0,
+  total_deposited: 0,
+  fee_buy_pct: 0.0,
+  fee_sell_pct: 0.0,
+  tax_sell_pct: 0.1,
+  cash_flows: [],
+  realized_trades: [],
+  monthly_snapshots: {},
+};
+
+let accountState = { ...DEFAULT_ACCOUNT };
+
+// -------------------- Service Worker Helper (Subpath-Safe for GitHub Pages) --------------------
+async function ensureActiveServiceWorker() {
+  if (!("serviceWorker" in navigator)) {
+    throw new Error("Trình duyệt không hỗ trợ Service Worker.");
+  }
+  const swUrl = new URL("./firebase-messaging-sw.js", window.location.href).href;
+  const swScope = new URL("./", window.location.href).pathname;
+
+  const reg = await navigator.serviceWorker.register(swUrl, { scope: swScope });
+  if (reg.active) {
+    swReg = reg;
+    return reg;
+  }
+
+  // Wait for installing/waiting SW to become active
+  await new Promise((resolve, reject) => {
+    const sw = reg.installing || reg.waiting;
+    if (!sw) {
+      resolve();
+      return;
+    }
+    const timer = setTimeout(() => reject(new Error("Service Worker kích hoạt quá lâu.")), 10000);
+    sw.addEventListener("statechange", () => {
+      if (sw.state === "activated") {
+        clearTimeout(timer);
+        resolve();
+      } else if (sw.state === "redundant") {
+        clearTimeout(timer);
+        reject(new Error("Service Worker bị hủy kích hoạt."));
+      }
+    });
+  });
+
+  swReg = reg;
+  return reg;
+}
 
 // -------------------- Bootstrap --------------------
 async function init() {
   if ("serviceWorker" in navigator) {
-    try {
-      swReg = await navigator.serviceWorker.register("./firebase-messaging-sw.js");
-    } catch (err) {
-      console.warn("SW registration failed:", err);
-    }
+    ensureActiveServiceWorker().catch((err) => console.warn("SW preload warning:", err));
   }
 
   if (!FIREBASE_CONFIG.apiKey || FIREBASE_CONFIG.apiKey.startsWith("REPLACE_")) {
@@ -121,7 +181,6 @@ async function init() {
 
 // -------------------- Event Binding --------------------
 function bindEvents() {
-  // Login
   $("login-form").addEventListener("submit", async (e) => {
     e.preventDefault();
     const email = $("login-email").value.trim();
@@ -140,12 +199,10 @@ function bindEvents() {
     }
   });
 
-  // Logout
   $("btn-logout").addEventListener("click", async () => {
     await signOut(auth);
   });
 
-  // Refresh
   $("btn-refresh").addEventListener("click", async () => {
     showToast("Đang đồng bộ dữ liệu từ Firestore...", 2000);
     await refreshAllData();
@@ -163,7 +220,6 @@ function bindEvents() {
     });
   });
 
-  // Report date selector
   $("report-date-select").addEventListener("change", (e) => {
     const dateKey = e.target.value;
     if (dateKey && reportsCache[dateKey]) {
@@ -185,25 +241,79 @@ function bindEvents() {
     });
   });
 
-  // Modal open/close
+  // Add/Edit Portfolio Modal
   $("btn-open-add-modal").addEventListener("click", () => openPortfolioModal(null));
   $("btn-close-modal").addEventListener("click", closePortfolioModal);
   $("portfolio-modal").addEventListener("click", (e) => {
     if (e.target === $("portfolio-modal")) closePortfolioModal();
   });
-
-  // Portfolio form submit
   $("portfolio-form").addEventListener("submit", handleSavePortfolio);
 
-  // Enable Push Notifications (FCM)
+  // Deposit / Withdraw Modal
+  $("btn-open-cashflow").addEventListener("click", openCashflowModal);
+  $("btn-close-cashflow").addEventListener("click", () => $("cashflow-modal").classList.add("hidden"));
+  $("cashflow-modal").addEventListener("click", (e) => {
+    if (e.target === $("cashflow-modal")) $("cashflow-modal").classList.add("hidden");
+  });
+  $("cashflow-form").addEventListener("submit", handleSaveCashflow);
+
+  // Sync Cash Modal
+  $("btn-open-sync-cash").addEventListener("click", openSyncCashModal);
+  $("btn-close-sync-cash").addEventListener("click", () => $("sync-cash-modal").classList.add("hidden"));
+  $("sync-cash-modal").addEventListener("click", (e) => {
+    if (e.target === $("sync-cash-modal")) $("sync-cash-modal").classList.add("hidden");
+  });
+  $("sync-cash-form").addEventListener("submit", handleSaveSyncCash);
+
+  // Sell / Take-Profit Modal
+  $("btn-close-sell").addEventListener("click", () => $("sell-modal").classList.add("hidden"));
+  $("sell-modal").addEventListener("click", (e) => {
+    if (e.target === $("sell-modal")) $("sell-modal").classList.add("hidden");
+  });
+  $("sell-price").addEventListener("input", updateSellPreview);
+  $("sell-qty").addEventListener("input", updateSellPreview);
+  $("sell-form").addEventListener("submit", handleConfirmSell);
+
+  // Fee settings form
+  $("fee-settings-form").addEventListener("submit", handleSaveFeeSettings);
+
+  // FCM Push Notification registration
   $("btn-enable-fcm").addEventListener("click", handleRegisterFcmToken);
 }
 
 // -------------------- Data Loading --------------------
 async function refreshAllData() {
-  await Promise.all([loadDailyReports(), loadPortfolio(), loadFcmSettings()]);
+  await Promise.all([loadDailyReports(), loadAccount(), loadPortfolio(), loadFcmSettings()]);
+  renderAccountSummary();
+  renderPortfolio();
 }
 
+async function loadAccount() {
+  try {
+    const snap = await getDoc(doc(db, "settings", "account"));
+    if (snap.exists()) {
+      accountState = { ...DEFAULT_ACCOUNT, ...snap.data() };
+    } else {
+      accountState = { ...DEFAULT_ACCOUNT };
+    }
+    $("set-fee-buy").value = accountState.fee_buy_pct ?? 0;
+    $("set-fee-sell").value = accountState.fee_sell_pct ?? 0;
+    $("set-tax-sell").value = accountState.tax_sell_pct ?? 0.1;
+  } catch (err) {
+    console.error("Failed to load settings/account:", err);
+  }
+}
+
+async function persistAccount(partialUpdates = {}) {
+  accountState = {
+    ...accountState,
+    ...partialUpdates,
+    updated_at: new Date().toISOString(),
+  };
+  await setDoc(doc(db, "settings", "account"), accountState, { merge: true });
+}
+
+// -------------------- Daily Reports --------------------
 async function loadDailyReports() {
   const select = $("report-date-select");
   try {
@@ -219,15 +329,17 @@ async function loadDailyReports() {
     });
 
     if (dates.length === 0) {
+      latestReport = null;
       select.innerHTML = `<option value="">Chưa có báo cáo</option>`;
       renderEmptyReport();
       return;
     }
 
+    latestReport = reportsCache[dates[0]];
     select.innerHTML = dates
       .map((d) => `<option value="${escapeHtml(d)}">${escapeHtml(d)}</option>`)
       .join("");
-    renderDailyReport(reportsCache[dates[0]]);
+    renderDailyReport(latestReport);
   } catch (err) {
     console.error("Failed to load daily_reports:", err);
     select.innerHTML = `<option value="">Lỗi tải dữ liệu</option>`;
@@ -266,7 +378,6 @@ function renderDailyReport(report) {
     : "inline-block px-2.5 py-1 rounded-full text-xs font-semibold bg-rose-500/20 text-rose-300 border border-rose-500/40";
   $("vni-ma50-val").textContent = `MA50: ${fmtNum(vni.ma50, 2)}`;
 
-  // Portfolio alerts
   const alerts = report.portfolio_alerts || [];
   const alertsWrap = $("daily-portfolio-alerts-wrap");
   const alertsList = $("daily-portfolio-alerts-list");
@@ -296,7 +407,6 @@ function renderDailyReport(report) {
     alertsWrap.classList.add("hidden");
   }
 
-  // Buy candidates
   const candidates = report.buy_candidates || [];
   $("candidates-count").textContent = `${candidates.length} mã`;
   const listEl = $("buy-candidates-list");
@@ -392,6 +502,173 @@ function renderDailyReport(report) {
     .join("");
 }
 
+// -------------------- Account NAV, P&L, Win Rate & Cash Ratio --------------------
+function getFeeRates() {
+  return {
+    buyFee: Number(accountState.fee_buy_pct || 0) / 100,
+    sellFee: Number(accountState.fee_sell_pct || 0) / 100,
+    sellTax: Number(accountState.tax_sell_pct ?? 0.1) / 100,
+  };
+}
+
+function calcBreakEvenPrice(buyPrice) {
+  const { buyFee, sellFee, sellTax } = getFeeRates();
+  const denom = Math.max(0.5, 1 - sellFee - sellTax);
+  return Math.ceil((Number(buyPrice) * (1 + buyFee)) / denom);
+}
+
+function calcNetHoldingPnl(buyPrice, latestPrice, qty) {
+  const { buyFee, sellFee, sellTax } = getFeeRates();
+  const totalCost = buyPrice * qty * (1 + buyFee);
+  const netProceeds = latestPrice * qty * (1 - sellFee - sellTax);
+  const netPnl = netProceeds - totalCost;
+  const netPct = totalCost > 0 ? (netPnl / totalCost) * 100 : 0;
+  return { totalCost, netProceeds, netPnl, netPct };
+}
+
+function renderAccountSummary() {
+  const holdings = portfolioItems.filter((p) => (p.status || "holding") === "holding");
+  let stockValue = 0;
+  let totalHoldingCost = 0;
+  let unrealizedNetPnl = 0;
+
+  for (const p of holdings) {
+    const buyPrice = Number(p.buy_price || 0);
+    const qty = Number(p.quantity || 0);
+    const latestPrice = Number(p.latest_price || buyPrice);
+    stockValue += latestPrice * qty;
+    const { totalCost, netPnl } = calcNetHoldingPnl(buyPrice, latestPrice, qty);
+    totalHoldingCost += totalCost;
+    unrealizedNetPnl += netPnl;
+  }
+
+  const cashBalance = Number(accountState.cash_balance || 0);
+  const totalDeposited = Number(accountState.total_deposited || 0);
+  const nav = cashBalance + stockValue;
+
+  const stockPct = nav > 0 ? Math.round((stockValue / nav) * 100) : 0;
+  const cashPct = nav > 0 ? 100 - stockPct : 100;
+
+  // Realized trades stats
+  const trades = Array.isArray(accountState.realized_trades) ? accountState.realized_trades : [];
+  const monthKey = currentMonthKey();
+  const realizedAllTime = trades.reduce((acc, t) => acc + Number(t.net_pnl || 0), 0);
+  const realizedThisMonth = trades
+    .filter((t) => String(t.sell_date || "").startsWith(monthKey))
+    .reduce((acc, t) => acc + Number(t.net_pnl || 0), 0);
+
+  // All-time P&L: prefer NAV - totalDeposited when user tracks deposits; else realized + unrealized
+  const allTimePnl = totalDeposited > 0 ? nav - totalDeposited : realizedAllTime + unrealizedNetPnl;
+  const allTimeBase = totalDeposited > 0 ? totalDeposited : totalHoldingCost;
+  const allTimePct = allTimeBase > 0 ? (allTimePnl / allTimeBase) * 100 : 0;
+
+  // Monthly P&L: use monthly_snapshots[YYYY-MM] if recorded, adjusted for deposits/withdrawals this month
+  const snapshots = accountState.monthly_snapshots || {};
+  const cashFlows = Array.isArray(accountState.cash_flows) ? accountState.cash_flows : [];
+  const netCashFlowThisMonth = cashFlows
+    .filter((cf) => String(cf.date || "").startsWith(monthKey))
+    .reduce((acc, cf) => acc + (cf.type === "withdraw" ? -Number(cf.amount || 0) : Number(cf.amount || 0)), 0);
+
+  let monthPnl = realizedThisMonth + unrealizedNetPnl;
+  let monthBase = allTimeBase;
+  if (typeof snapshots[monthKey] === "number" && snapshots[monthKey] > 0) {
+    monthPnl = nav - snapshots[monthKey] - netCashFlowThisMonth;
+    monthBase = snapshots[monthKey] + Math.max(0, netCashFlowThisMonth);
+  } else if (nav > 0 && db) {
+    // Initialize month start snapshot silently once NAV > 0
+    const initNav = Math.max(0, nav - netCashFlowThisMonth);
+    if (initNav > 0) {
+      persistAccount({
+        monthly_snapshots: { ...snapshots, [monthKey]: initNav },
+      }).catch(() => {});
+    }
+  }
+  const monthPct = monthBase > 0 ? (monthPnl / monthBase) * 100 : 0;
+
+  // Render NAV card
+  $("acc-nav").textContent = fmtVnd(nav);
+  $("acc-deposited-line").textContent = `Vốn đã nạp ròng: ${fmtVnd(totalDeposited)}`;
+  $("acc-stock-val").textContent = fmtVnd(stockValue);
+  $("acc-cash-val").textContent = fmtVnd(cashBalance);
+  $("acc-stock-pct").textContent = `${stockPct}%`;
+  $("acc-cash-pct").textContent = `${cashPct}%`;
+  $("acc-stock-bar").style.width = `${stockPct}%`;
+  $("acc-cash-bar").style.width = `${cashPct}%`;
+
+  $("acc-month-label").textContent = `Lời/lỗ tháng ${monthKey}`;
+  $("acc-month-pnl").textContent = fmtSignedVnd(monthPnl);
+  $("acc-month-pnl").className = `text-sm font-bold tabular-nums mt-0.5 ${
+    monthPnl >= 0 ? "text-emerald-400" : "text-rose-400"
+  }`;
+  $("acc-month-pnl-pct").textContent = `${monthPct >= 0 ? "+" : ""}${fmtNum(monthPct, 2)}%`;
+  $("acc-month-pnl-pct").className = `text-[11px] tabular-nums ${
+    monthPnl >= 0 ? "text-emerald-300/80" : "text-rose-300/80"
+  }`;
+
+  $("acc-alltime-pnl").textContent = fmtSignedVnd(allTimePnl);
+  $("acc-alltime-pnl").className = `text-sm font-bold tabular-nums mt-0.5 ${
+    allTimePnl >= 0 ? "text-emerald-400" : "text-rose-400"
+  }`;
+  $("acc-alltime-pnl-pct").textContent = `${allTimePct >= 0 ? "+" : ""}${fmtNum(allTimePct, 2)}% (Chốt: ${fmtSignedVnd(realizedAllTime)})`;
+  $("acc-alltime-pnl-pct").className = `text-[11px] tabular-nums ${
+    allTimePnl >= 0 ? "text-emerald-300/80" : "text-rose-300/80"
+  }`;
+
+  // Idea 4: Cash ratio warning when VN-Index < MA50 & Stock > 60%
+  const vniWarning = Boolean(latestReport?.vnindex?.warning_flag);
+  const warnBox = $("cash-ratio-warning");
+  if (vniWarning && nav > 0 && stockPct > 60) {
+    $("cash-ratio-warning-text").textContent =
+      `VN-Index đang dưới MA50 (rủi ro cao), nhưng tỷ trọng cổ phiếu hiện tại là ${stockPct}% (> 60% NAV). Nên cân nhắc hạ bớt tỷ trọng và giữ tiền mặt phòng thủ.`;
+    warnBox.classList.remove("hidden");
+  } else {
+    warnBox.classList.add("hidden");
+  }
+
+  // Idea 3: Win Rate & Avg Win / Avg Loss
+  renderPerformanceStats(trades);
+}
+
+function renderPerformanceStats(trades) {
+  const total = trades.length;
+  $("perf-summary-badge").textContent = `${total} lệnh chốt ▾`;
+
+  const wins = trades.filter((t) => Number(t.net_pnl || 0) > 0);
+  const losses = trades.filter((t) => Number(t.net_pnl || 0) <= 0);
+  const winRate = total > 0 ? (wins.length / total) * 100 : null;
+  const avgWin = wins.length > 0 ? wins.reduce((a, t) => a + Number(t.net_pnl_pct || 0), 0) / wins.length : null;
+  const avgLoss = losses.length > 0 ? losses.reduce((a, t) => a + Number(t.net_pnl_pct || 0), 0) / losses.length : null;
+
+  $("perf-winrate").textContent = winRate !== null ? `${fmtNum(winRate, 1)}%` : "--";
+  $("perf-wl").textContent = `${wins.length} / ${losses.length}`;
+  $("perf-avg-win").textContent = avgWin !== null ? `+${fmtNum(avgWin, 1)}%` : "--";
+  $("perf-avg-loss").textContent = avgLoss !== null ? `${fmtNum(avgLoss, 1)}%` : "--";
+
+  const listEl = $("realized-trades-list");
+  if (total === 0) {
+    listEl.innerHTML = `<p class="text-slate-500 text-center py-2">Chưa có lệnh chốt lời / cắt lỗ nào.</p>`;
+    return;
+  }
+
+  const sorted = [...trades].sort((a, b) => String(b.sell_date || "").localeCompare(String(a.sell_date || "")));
+  listEl.innerHTML = sorted
+    .slice(0, 15)
+    .map((t) => {
+      const pos = Number(t.net_pnl || 0) >= 0;
+      return `
+        <div class="flex items-center justify-between bg-slate-950/60 rounded-lg px-2.5 py-1.5">
+          <div>
+            <span class="font-bold text-white">${escapeHtml(t.ticker)}</span>
+            <span class="text-slate-400"> • ${t.quantity} CP • ${escapeHtml(t.sell_date || "")}</span>
+          </div>
+          <span class="font-semibold tabular-nums ${pos ? "text-emerald-400" : "text-rose-400"}">
+            ${fmtSignedVnd(t.net_pnl)} (${pos ? "+" : ""}${fmtNum(t.net_pnl_pct, 1)}%)
+          </span>
+        </div>`;
+    })
+    .join("");
+}
+
 // -------------------- Portfolio CRUD --------------------
 async function loadPortfolio() {
   try {
@@ -401,14 +678,12 @@ async function loadPortfolio() {
       portfolioItems.push({ ticker: d.id, ...d.data() });
     });
     portfolioItems.sort((a, b) => (b.buy_date || "").localeCompare(a.buy_date || ""));
-    renderPortfolio();
   } catch (err) {
     console.error("Failed to load portfolio:", err);
     $("portfolio-list").innerHTML = `
       <div class="rounded-2xl bg-rose-950/60 border border-rose-500/40 p-4 text-xs text-rose-200 space-y-1">
         <p class="font-bold text-rose-300">Không thể kết nối Firestore (${escapeHtml(err.code || "error")})</p>
         <p>${escapeHtml(err.message || err)}</p>
-        <p class="text-rose-200/80">Hãy kiểm tra đã tạo Firestore Database và Publish Rules cho email đang đăng nhập chưa.</p>
       </div>`;
   }
 }
@@ -432,8 +707,8 @@ function renderPortfolio() {
       const latestPrice = Number(p.latest_price || buyPrice);
       const highestPrice = Number(p.highest_price || Math.max(buyPrice, latestPrice));
       const ma50 = Number(p.latest_ma50 || 0);
-      const pnlPct = buyPrice > 0 ? ((latestPrice - buyPrice) / buyPrice) * 100 : 0;
-      const pnlVnd = (latestPrice - buyPrice) * qty;
+      const breakEven = calcBreakEvenPrice(buyPrice);
+      const { netPnl, netPct } = calcNetHoldingPnl(buyPrice, latestPrice, qty);
       const trailingStopPrice = Math.round(highestPrice * 0.92);
       const belowMa50 = ma50 > 0 && latestPrice < ma50;
 
@@ -441,7 +716,7 @@ function renderPortfolio() {
         <div class="glass-card rounded-2xl p-4 space-y-3">
           <div class="flex items-start justify-between">
             <div>
-              <div class="flex items-center gap-2">
+              <div class="flex items-center gap-2 flex-wrap">
                 <span class="text-base font-extrabold text-white">${escapeHtml(p.ticker)}</span>
                 <span class="text-[11px] text-slate-400">${escapeHtml(p.exchange || "HOSE")}</span>
                 ${
@@ -455,17 +730,17 @@ function renderPortfolio() {
                     : ""
                 }
               </div>
-              <p class="text-[11px] text-slate-400 mt-0.5">
-                SL: ${qty} CP • Mua: ${fmtVnd(buyPrice)} (${escapeHtml(p.buy_date || "--")})
+              <p class="text-[11px] text-slate-400 mt-0.5 tabular-nums">
+                SL: ${qty} CP • Mua: ${fmtVnd(buyPrice)} • Hòa vốn: <span class="text-slate-200">${fmtVnd(breakEven)}</span>
               </p>
             </div>
             <div class="text-right">
               <p class="text-sm font-bold tabular-nums ${
-                pnlPct >= 0 ? "text-emerald-400" : "text-rose-400"
-              }">${pnlPct >= 0 ? "+" : ""}${fmtNum(pnlPct, 2)}%</p>
+                netPct >= 0 ? "text-emerald-400" : "text-rose-400"
+              }">${netPct >= 0 ? "+" : ""}${fmtNum(netPct, 2)}%</p>
               <p class="text-[11px] tabular-nums ${
-                pnlVnd >= 0 ? "text-emerald-300/80" : "text-rose-300/80"
-              }">${pnlVnd >= 0 ? "+" : ""}${fmtVnd(Math.round(pnlVnd))}</p>
+                netPnl >= 0 ? "text-emerald-300/80" : "text-rose-300/80"
+              }">${fmtSignedVnd(netPnl)} <span class="text-[10px] text-slate-500">(ròng)</span></p>
             </div>
           </div>
 
@@ -497,13 +772,9 @@ function renderPortfolio() {
           <div class="flex flex-wrap gap-2 pt-1">
             ${
               p.status !== "closed"
-                ? `<button data-action="toggle-half" data-ticker="${escapeHtml(p.ticker)}"
-                     class="px-3 py-1.5 rounded-lg text-[11px] font-semibold ${
-                       p.sold_half
-                         ? "bg-amber-500/20 text-amber-300 border border-amber-500/40"
-                         : "bg-slate-800 hover:bg-slate-700 text-slate-200"
-                     }">
-                     ${p.sold_half ? "✓ Đã chốt 1/2" : "Đánh dấu chốt 1/2"}
+                ? `<button data-action="sell" data-ticker="${escapeHtml(p.ticker)}"
+                     class="px-3 py-1.5 rounded-lg text-[11px] font-semibold bg-amber-600/25 hover:bg-amber-600/40 text-amber-300 border border-amber-500/40">
+                     💰 Bán / Chốt lời
                    </button>`
                 : ""
             }
@@ -520,7 +791,6 @@ function renderPortfolio() {
     })
     .join("");
 
-  // Attach card action handlers
   listEl.querySelectorAll("button[data-action]").forEach((btn) => {
     btn.addEventListener("click", async () => {
       const action = btn.dataset.action;
@@ -530,19 +800,15 @@ function renderPortfolio() {
 
       if (action === "edit") {
         openPortfolioModal(item);
-      } else if (action === "toggle-half") {
-        await setDoc(
-          doc(db, "portfolio", ticker),
-          { sold_half: !item.sold_half },
-          { merge: true }
-        );
-        showToast(`Đã cập nhật trạng thái chốt 1/2 cho ${ticker}.`);
-        await loadPortfolio();
+      } else if (action === "sell") {
+        openSellModal(item);
       } else if (action === "delete") {
         if (confirm(`Xóa mã ${ticker} khỏi danh mục Firestore?`)) {
           await deleteDoc(doc(db, "portfolio", ticker));
           showToast(`Đã xóa ${ticker}.`);
           await loadPortfolio();
+          renderAccountSummary();
+          renderPortfolio();
         }
       }
     });
@@ -551,16 +817,18 @@ function renderPortfolio() {
 
 function openPortfolioModal(item) {
   const isEdit = Boolean(item);
-  $("modal-title").textContent = isEdit ? `Cập nhật ${item.ticker}` : "Nhập lệnh Mua / Bán";
+  $("modal-title").textContent = isEdit ? `Cập nhật ${item.ticker}` : "Nhập lệnh Mua";
   $("pf-ticker").value = item ? item.ticker : "";
   $("pf-ticker").disabled = isEdit;
   $("pf-exchange").value = item?.exchange || "HOSE";
   $("pf-buy-price").value = item?.buy_price || "";
   $("pf-quantity").value = item?.quantity || "";
-  $("pf-buy-date").value = item?.buy_date || new Date().toISOString().slice(0, 10);
+  $("pf-buy-date").value = item?.buy_date || todayIso();
   $("pf-status").value = item?.status || "holding";
   $("pf-sold-half").checked = Boolean(item?.sold_half);
   $("pf-notes").value = item?.notes || "";
+  $("pf-deduct-cash-wrap").classList.toggle("hidden", isEdit);
+  $("pf-deduct-cash").checked = !isEdit;
   $("pf-form-error").classList.add("hidden");
   $("pf-form-error").textContent = "";
   $("portfolio-modal").classList.remove("hidden");
@@ -581,7 +849,9 @@ async function handleSavePortfolio(e) {
   btn.disabled = true;
   btn.textContent = "Đang lưu...";
 
+  const isEdit = $("pf-ticker").disabled;
   const buyPrice = Number($("pf-buy-price").value);
+  const qty = Number($("pf-quantity").value);
   const existing = portfolioItems.find((x) => x.ticker === ticker);
   const highestPrice = Math.max(Number(existing?.highest_price || 0), buyPrice);
 
@@ -589,7 +859,7 @@ async function handleSavePortfolio(e) {
     ticker,
     exchange: $("pf-exchange").value,
     buy_price: buyPrice,
-    quantity: Number($("pf-quantity").value),
+    quantity: qty,
     buy_date: $("pf-buy-date").value,
     highest_price: highestPrice,
     sold_half: $("pf-sold-half").checked,
@@ -599,16 +869,21 @@ async function handleSavePortfolio(e) {
   };
 
   try {
-    const timeoutPromise = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error("Hết thời gian kết nối Firestore (10s). Kiểm tra đã tạo Firestore Database trên Firebase Console chưa.")), 10000)
-    );
-    await Promise.race([
-      setDoc(doc(db, "portfolio", ticker), payload, { merge: true }),
-      timeoutPromise,
-    ]);
+    await setDoc(doc(db, "portfolio", ticker), payload, { merge: true });
+
+    // Auto-deduct cash for new Buy orders if checked
+    if (!isEdit && $("pf-deduct-cash").checked && payload.status === "holding") {
+      const { buyFee } = getFeeRates();
+      const buyCost = Math.round(buyPrice * qty * (1 + buyFee));
+      const newCash = Math.max(0, Number(accountState.cash_balance || 0) - buyCost);
+      await persistAccount({ cash_balance: newCash });
+    }
+
     closePortfolioModal();
     showToast(`Đã lưu lệnh ${ticker} vào Firestore!`);
     await loadPortfolio();
+    renderAccountSummary();
+    renderPortfolio();
   } catch (err) {
     errEl.textContent = `Lỗi lưu Firestore: ${err.code ? `[${err.code}] ` : ""}${err.message || err}`;
     errEl.classList.remove("hidden");
@@ -618,7 +893,215 @@ async function handleSavePortfolio(e) {
   }
 }
 
-// -------------------- FCM Push Notifications --------------------
+// -------------------- Deposit / Withdraw & Sync Cash --------------------
+function openCashflowModal() {
+  $("cf-type").value = "deposit";
+  $("cf-date").value = todayIso();
+  $("cf-amount").value = "";
+  $("cf-note").value = "";
+  renderCashflowHistory();
+  $("cashflow-modal").classList.remove("hidden");
+}
+
+function renderCashflowHistory() {
+  const listEl = $("cashflow-history-list");
+  const flows = [...(accountState.cash_flows || [])].sort((a, b) =>
+    String(b.date || "").localeCompare(String(a.date || ""))
+  );
+  if (flows.length === 0) {
+    listEl.innerHTML = `<p class="text-slate-500 text-center py-2">Chưa có giao dịch nạp/rút nào.</p>`;
+    return;
+  }
+  listEl.innerHTML = flows
+    .slice(0, 10)
+    .map((cf) => {
+      const isDep = cf.type !== "withdraw";
+      return `
+        <div class="flex items-center justify-between bg-slate-950/60 rounded-lg px-2.5 py-1.5">
+          <div>
+            <span class="${isDep ? "text-emerald-300" : "text-rose-300"} font-semibold">${isDep ? "Nạp" : "Rút"}</span>
+            <span class="text-slate-400"> • ${escapeHtml(cf.date || "")}</span>
+            ${cf.note ? `<p class="text-[10px] text-slate-500">${escapeHtml(cf.note)}</p>` : ""}
+          </div>
+          <span class="font-semibold tabular-nums ${isDep ? "text-emerald-400" : "text-rose-400"}">
+            ${isDep ? "+" : "-"}${fmtVnd(cf.amount)}
+          </span>
+        </div>`;
+    })
+    .join("");
+}
+
+async function handleSaveCashflow(e) {
+  e.preventDefault();
+  const type = $("cf-type").value;
+  const amount = Number($("cf-amount").value);
+  const date = $("cf-date").value;
+  const note = $("cf-note").value.trim();
+  if (!amount || amount <= 0) return;
+
+  const delta = type === "withdraw" ? -amount : amount;
+  const newCash = Math.max(0, Number(accountState.cash_balance || 0) + delta);
+  const newDeposited = Math.max(0, Number(accountState.total_deposited || 0) + delta);
+  const newFlows = [
+    ...(accountState.cash_flows || []),
+    { id: Date.now().toString(), type, amount, date, note },
+  ];
+
+  await persistAccount({
+    cash_balance: newCash,
+    total_deposited: newDeposited,
+    cash_flows: newFlows,
+  });
+
+  $("cashflow-modal").classList.add("hidden");
+  showToast(type === "deposit" ? `Đã nạp +${fmtVnd(amount)}` : `Đã rút -${fmtVnd(amount)}`);
+  renderAccountSummary();
+}
+
+function openSyncCashModal() {
+  $("sync-cash-balance").value = Math.round(Number(accountState.cash_balance || 0));
+  $("sync-total-deposited").value = Math.round(Number(accountState.total_deposited || 0));
+  $("sync-cash-modal").classList.remove("hidden");
+}
+
+async function handleSaveSyncCash(e) {
+  e.preventDefault();
+  const cashBalance = Number($("sync-cash-balance").value);
+  const totalDeposited = Number($("sync-total-deposited").value);
+  await persistAccount({
+    cash_balance: Math.max(0, cashBalance),
+    total_deposited: Math.max(0, totalDeposited),
+  });
+  $("sync-cash-modal").classList.add("hidden");
+  showToast("Đã đồng bộ số dư tiền mặt & vốn nạp thực tế!");
+  renderAccountSummary();
+}
+
+// -------------------- Sell / Take-Profit Modal --------------------
+let activeSellItem = null;
+
+function openSellModal(item) {
+  activeSellItem = item;
+  $("sell-modal-title").textContent = `Bán / Chốt lời ${item.ticker} (đang giữ ${item.quantity} CP)`;
+  $("sell-ticker").value = item.ticker;
+  $("sell-price").value = Math.round(Number(item.latest_price || item.buy_price || 0));
+  $("sell-qty").max = Number(item.quantity || 1);
+  $("sell-qty").value = Number(item.quantity || 1);
+  $("sell-date").value = todayIso();
+
+  $("btn-sell-half-preset").onclick = () => {
+    $("sell-qty").value = Math.max(1, Math.floor(Number(item.quantity || 1) / 2));
+    updateSellPreview();
+  };
+  $("btn-sell-all-preset").onclick = () => {
+    $("sell-qty").value = Number(item.quantity || 1);
+    updateSellPreview();
+  };
+
+  updateSellPreview();
+  $("sell-modal").classList.remove("hidden");
+}
+
+function updateSellPreview() {
+  if (!activeSellItem) return;
+  const sellPrice = Number($("sell-price").value || 0);
+  const sellQty = Number($("sell-qty").value || 0);
+  const buyPrice = Number(activeSellItem.buy_price || 0);
+  if (sellPrice <= 0 || sellQty <= 0) return;
+
+  const { buyFee, sellFee, sellTax } = getFeeRates();
+  const grossProceeds = sellPrice * sellQty;
+  const sellFeeTax = Math.round(grossProceeds * (sellFee + sellTax));
+  const netProceeds = Math.round(grossProceeds - sellFeeTax);
+  const costBasis = Math.round(buyPrice * sellQty * (1 + buyFee));
+  const netPnl = netProceeds - costBasis;
+  const netPct = costBasis > 0 ? (netPnl / costBasis) * 100 : 0;
+
+  $("sell-preview").innerHTML = `
+    <div class="flex justify-between"><span class="text-slate-400">Tiền bán gộp:</span><span class="text-white tabular-nums">${fmtVnd(grossProceeds)}</span></div>
+    <div class="flex justify-between"><span class="text-slate-400">Phí bán + Thuế (0.1%):</span><span class="text-rose-300 tabular-nums">-${fmtVnd(sellFeeTax)}</span></div>
+    <div class="flex justify-between font-semibold"><span class="text-slate-200">Tiền thực nhận về ví:</span><span class="text-sky-300 tabular-nums">${fmtVnd(netProceeds)}</span></div>
+    <div class="flex justify-between font-bold border-t border-slate-800 pt-1.5 mt-1">
+      <span class="text-slate-200">Lãi/Lỗ ròng lệnh này:</span>
+      <span class="tabular-nums ${netPnl >= 0 ? "text-emerald-400" : "text-rose-400"}">${fmtSignedVnd(netPnl)} (${netPnl >= 0 ? "+" : ""}${fmtNum(netPct, 2)}%)</span>
+    </div>`;
+}
+
+async function handleConfirmSell(e) {
+  e.preventDefault();
+  if (!activeSellItem) return;
+  const ticker = activeSellItem.ticker;
+  const sellPrice = Number($("sell-price").value);
+  const sellQty = Number($("sell-qty").value);
+  const sellDate = $("sell-date").value;
+  const holdingQty = Number(activeSellItem.quantity || 0);
+  if (sellPrice <= 0 || sellQty <= 0 || sellQty > holdingQty) {
+    alert("Số lượng bán không hợp lệ.");
+    return;
+  }
+
+  const { buyFee, sellFee, sellTax } = getFeeRates();
+  const grossProceeds = sellPrice * sellQty;
+  const sellFeeTax = Math.round(grossProceeds * (sellFee + sellTax));
+  const netProceeds = Math.round(grossProceeds - sellFeeTax);
+  const costBasis = Math.round(Number(activeSellItem.buy_price || 0) * sellQty * (1 + buyFee));
+  const netPnl = netProceeds - costBasis;
+  const netPct = costBasis > 0 ? (netPnl / costBasis) * 100 : 0;
+
+  const remainingQty = holdingQty - sellQty;
+  if (remainingQty > 0) {
+    await setDoc(
+      doc(db, "portfolio", ticker),
+      { quantity: remainingQty, sold_half: true, updated_at: new Date().toISOString() },
+      { merge: true }
+    );
+  } else {
+    await setDoc(
+      doc(db, "portfolio", ticker),
+      { status: "closed", sell_price: sellPrice, sell_date: sellDate, updated_at: new Date().toISOString() },
+      { merge: true }
+    );
+  }
+
+  const newTrade = {
+    id: Date.now().toString(),
+    ticker,
+    buy_price: Number(activeSellItem.buy_price || 0),
+    sell_price: sellPrice,
+    quantity: sellQty,
+    buy_date: activeSellItem.buy_date || "",
+    sell_date: sellDate,
+    fee_tax: sellFeeTax,
+    net_pnl: netPnl,
+    net_pnl_pct: Number(netPct.toFixed(2)),
+  };
+
+  await persistAccount({
+    cash_balance: Number(accountState.cash_balance || 0) + netProceeds,
+    realized_trades: [...(accountState.realized_trades || []), newTrade],
+  });
+
+  $("sell-modal").classList.add("hidden");
+  showToast(`Đã bán ${sellQty} CP ${ticker}, cộng ${fmtVnd(netProceeds)} về tiền mặt!`);
+  await loadPortfolio();
+  renderAccountSummary();
+  renderPortfolio();
+}
+
+// -------------------- Fee Settings --------------------
+async function handleSaveFeeSettings(e) {
+  e.preventDefault();
+  await persistAccount({
+    fee_buy_pct: Math.max(0, Number($("set-fee-buy").value || 0)),
+    fee_sell_pct: Math.max(0, Number($("set-fee-sell").value || 0)),
+    tax_sell_pct: Math.max(0, Number($("set-tax-sell").value || 0)),
+  });
+  showToast("Đã lưu cấu hình phí giao dịch & thuế bán!");
+  renderAccountSummary();
+  renderPortfolio();
+}
+
+// -------------------- FCM Push Notifications (Fixed for GitHub Pages Subpath) --------------------
 async function loadFcmSettings() {
   const badge = $("fcm-status-badge");
   if (!("Notification" in window)) {
@@ -644,6 +1127,7 @@ async function loadFcmSettings() {
 
 async function handleRegisterFcmToken() {
   const feedback = $("fcm-feedback");
+  const btn = $("btn-enable-fcm");
   feedback.classList.remove("hidden");
 
   if (!messaging) {
@@ -657,6 +1141,9 @@ async function handleRegisterFcmToken() {
     return;
   }
 
+  btn.disabled = true;
+  btn.textContent = "Đang kích hoạt Service Worker & lấy FCM Token...";
+
   try {
     const perm = await Notification.requestPermission();
     if (perm !== "granted") {
@@ -665,9 +1152,12 @@ async function handleRegisterFcmToken() {
       return;
     }
 
+    // Explicitly register and wait for active SW under current subpath (/bottrader/)
+    const activeReg = await ensureActiveServiceWorker();
+
     const token = await getToken(messaging, {
       vapidKey: FCM_VAPID_KEY,
-      serviceWorkerRegistration: swReg,
+      serviceWorkerRegistration: activeReg,
     });
     if (!token) throw new Error("Không lấy được FCM token.");
 
@@ -686,6 +1176,9 @@ async function handleRegisterFcmToken() {
   } catch (err) {
     feedback.className = "text-xs text-rose-400";
     feedback.textContent = "Lỗi đăng ký FCM: " + (err.message || err);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "🔔 Bật / Cập nhật Push Notification trên thiết bị này";
   }
 }
 

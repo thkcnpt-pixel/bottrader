@@ -73,7 +73,6 @@
 
     <!-- ==================== TAB 1: DASHBOARD (BÁO CÁO NGÀY) ==================== -->
     <section id="tab-dashboard" class="space-y-4">
-      <!-- Report Date Picker -->
       <div class="flex items-center justify-between gap-2">
         <h2 class="text-base font-bold text-white">Báo cáo ngày</h2>
         <select id="report-date-select"
@@ -82,7 +81,7 @@
         </select>
       </div>
 
-      <!-- VN-Index Warning Banner (shown only if warning_flag == true) -->
+      <!-- VN-Index Warning Banner -->
       <div id="vnindex-warning-banner" class="hidden rounded-xl bg-rose-950/80 border border-rose-500/60 p-3.5 flex items-start gap-2.5">
         <span class="text-lg leading-none">🚨</span>
         <div>
@@ -130,26 +129,109 @@
       </div>
     </section>
 
-    <!-- ==================== TAB 2: PORTFOLIO (DANH MỤC) ==================== -->
+    <!-- ==================== TAB 2: PORTFOLIO (DANH MỤC & TÀI SẢN) ==================== -->
     <section id="tab-portfolio" class="hidden space-y-4">
-      <div class="flex items-center justify-between">
-        <div>
-          <h2 class="text-base font-bold text-white">Danh mục đầu tư</h2>
-          <p class="text-xs text-slate-400">Ghi trực tiếp Firestore • Quản trị MA50 &amp; Trailing Stop</p>
-        </div>
-        <button id="btn-open-add-modal"
-                class="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold transition">
-          + Nhập lệnh
-        </button>
+
+      <!-- Cash Ratio Risk Warning when VN-Index < MA50 & Stock > 60% -->
+      <div id="cash-ratio-warning" class="hidden rounded-xl bg-amber-950/75 border border-amber-500/50 p-3.5 flex items-start gap-2.5">
+        <span class="text-base leading-none">🛡️</span>
+        <p id="cash-ratio-warning-text" class="text-xs text-amber-200 leading-relaxed"></p>
       </div>
 
-      <!-- Filter Holding / Closed -->
-      <div class="flex gap-2">
-        <button data-pf-filter="holding" class="pf-filter-btn px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600/20 text-emerald-300 border border-emerald-500/40">
-          Đang nắm giữ
-        </button>
-        <button data-pf-filter="closed" class="pf-filter-btn px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800/80 text-slate-400 border border-slate-700">
-          Đã đóng
+      <!-- NAV & Account Summary Card -->
+      <div class="glass-card rounded-2xl p-4 space-y-3.5">
+        <div class="flex items-start justify-between gap-2">
+          <div>
+            <p class="text-[11px] text-slate-400 uppercase tracking-wider">Tổng tài sản hiện có (NAV)</p>
+            <p id="acc-nav" class="text-2xl font-extrabold text-white tabular-nums mt-0.5">0 đ</p>
+            <p id="acc-deposited-line" class="text-[11px] text-slate-400 mt-0.5 tabular-nums">Vốn đã nạp ròng: 0 đ</p>
+          </div>
+          <div class="flex flex-col gap-1.5 shrink-0">
+            <button id="btn-open-cashflow"
+                    class="px-3 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-white text-[11px] font-semibold transition">
+              + Nạp / Rút tiền
+            </button>
+            <button id="btn-open-sync-cash"
+                    class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-[11px] font-medium transition">
+              ⚙ Sửa tiền mặt
+            </button>
+          </div>
+        </div>
+
+        <!-- Stock vs Cash Breakdown + Bar -->
+        <div class="space-y-1.5">
+          <div class="flex items-center justify-between text-[11px]">
+            <span class="text-emerald-300 font-medium tabular-nums">Cổ phiếu: <strong id="acc-stock-val">0 đ</strong> (<span id="acc-stock-pct">0%</span>)</span>
+            <span class="text-sky-300 font-medium tabular-nums">Tiền mặt: <strong id="acc-cash-val">0 đ</strong> (<span id="acc-cash-pct">0%</span>)</span>
+          </div>
+          <div class="w-full h-2 rounded-full bg-slate-800 overflow-hidden flex">
+            <div id="acc-stock-bar" class="h-full bg-emerald-500 transition-all" style="width: 0%"></div>
+            <div id="acc-cash-bar" class="h-full bg-sky-500 transition-all" style="width: 100%"></div>
+          </div>
+        </div>
+
+        <!-- Monthly P&L & All-time P&L -->
+        <div class="grid grid-cols-2 gap-2.5 pt-1">
+          <div class="rounded-xl bg-slate-950/70 border border-slate-800 p-3">
+            <p id="acc-month-label" class="text-[11px] text-slate-400">Lời/lỗ tháng này</p>
+            <p id="acc-month-pnl" class="text-sm font-bold text-white tabular-nums mt-0.5">0 đ</p>
+            <p id="acc-month-pnl-pct" class="text-[11px] text-slate-400 tabular-nums">0.00%</p>
+          </div>
+          <div class="rounded-xl bg-slate-950/70 border border-slate-800 p-3">
+            <p class="text-[11px] text-slate-400">Tổng lời/lỗ từ trước tới nay</p>
+            <p id="acc-alltime-pnl" class="text-sm font-bold text-white tabular-nums mt-0.5">0 đ</p>
+            <p id="acc-alltime-pnl-pct" class="text-[11px] text-slate-400 tabular-nums">0.00%</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Performance Stats Card (Win Rate & Avg Win / Avg Loss) -->
+      <details class="glass-card rounded-2xl p-3.5 group">
+        <summary class="cursor-pointer flex items-center justify-between list-none">
+          <div class="flex items-center gap-2">
+            <span class="text-sm">📈</span>
+            <span class="text-xs font-bold text-white">Thống kê hiệu suất (Win Rate &amp; Lãi/Lỗ TB)</span>
+          </div>
+          <span id="perf-summary-badge" class="text-[11px] font-semibold text-slate-400">0 lệnh chốt ▾</span>
+        </summary>
+        <div class="mt-3 pt-3 border-t border-slate-800 space-y-2.5">
+          <div class="grid grid-cols-4 gap-2 text-center bg-slate-950/60 rounded-xl p-2.5 text-[11px]">
+            <div>
+              <p class="text-slate-400">Win Rate</p>
+              <p id="perf-winrate" class="font-bold text-emerald-300 tabular-nums">--</p>
+            </div>
+            <div>
+              <p class="text-slate-400">Thắng / Thua</p>
+              <p id="perf-wl" class="font-bold text-white tabular-nums">0 / 0</p>
+            </div>
+            <div>
+              <p class="text-slate-400">Lãi TB</p>
+              <p id="perf-avg-win" class="font-bold text-emerald-400 tabular-nums">--</p>
+            </div>
+            <div>
+              <p class="text-slate-400">Lỗ TB</p>
+              <p id="perf-avg-loss" class="font-bold text-rose-400 tabular-nums">--</p>
+            </div>
+          </div>
+          <div id="realized-trades-list" class="space-y-1.5 max-h-44 overflow-y-auto text-[11px]">
+            <p class="text-slate-500 text-center py-2">Chưa có lệnh chốt lời / cắt lỗ nào.</p>
+          </div>
+        </div>
+      </details>
+
+      <!-- Portfolio Header & Add Buy Button -->
+      <div class="flex items-center justify-between pt-1">
+        <div class="flex gap-2">
+          <button data-pf-filter="holding" class="pf-filter-btn px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600/20 text-emerald-300 border border-emerald-500/40">
+            Đang nắm giữ
+          </button>
+          <button data-pf-filter="closed" class="pf-filter-btn px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800/80 text-slate-400 border border-slate-700">
+            Đã đóng
+          </button>
+        </div>
+        <button id="btn-open-add-modal"
+                class="px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold transition">
+          + Nhập lệnh Mua
         </button>
       </div>
 
@@ -165,6 +247,7 @@
     <section id="tab-settings" class="hidden space-y-4">
       <h2 class="text-base font-bold text-white">Cài đặt &amp; Thông báo</h2>
 
+      <!-- Push Notification Card -->
       <div class="glass-card rounded-2xl p-4 space-y-3">
         <div class="flex items-start justify-between gap-3">
           <div>
@@ -179,13 +262,45 @@
         </div>
 
         <button id="btn-enable-fcm"
-                class="w-full rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-semibold py-2.5 text-xs transition">
+                class="w-full rounded-xl bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white font-semibold py-2.5 text-xs transition">
           🔔 Bật / Cập nhật Push Notification trên thiết bị này
         </button>
-        <p id="fcm-feedback" class="hidden text-xs"></p>
+        <p id="fcm-feedback" class="hidden text-xs leading-relaxed"></p>
         <p id="fcm-token-count" class="text-[11px] text-slate-400">Số thiết bị đã đăng ký: --</p>
       </div>
 
+      <!-- Fee & Tax Settings -->
+      <div class="glass-card rounded-2xl p-4 space-y-3">
+        <div>
+          <h3 class="text-sm font-semibold text-white">Phí giao dịch &amp; Thuế bán</h3>
+          <p class="text-xs text-slate-400 mt-0.5">Mặc định gói DNSE/ZaloPay: 0% phí mua, 0% phí bán, 0.1% thuế TNCN khi bán.</p>
+        </div>
+        <form id="fee-settings-form" class="space-y-3">
+          <div class="grid grid-cols-3 gap-2">
+            <div>
+              <label class="block text-[11px] text-slate-300 mb-1">Phí mua (%)</label>
+              <input id="set-fee-buy" type="number" step="0.01" min="0" max="2" value="0"
+                     class="w-full rounded-lg bg-slate-950 border border-slate-700 px-2.5 py-2 text-xs text-white tabular-nums focus:outline-none focus:border-emerald-500" />
+            </div>
+            <div>
+              <label class="block text-[11px] text-slate-300 mb-1">Phí bán (%)</label>
+              <input id="set-fee-sell" type="number" step="0.01" min="0" max="2" value="0"
+                     class="w-full rounded-lg bg-slate-950 border border-slate-700 px-2.5 py-2 text-xs text-white tabular-nums focus:outline-none focus:border-emerald-500" />
+            </div>
+            <div>
+              <label class="block text-[11px] text-slate-300 mb-1">Thuế bán (%)</label>
+              <input id="set-tax-sell" type="number" step="0.01" min="0" max="2" value="0.1"
+                     class="w-full rounded-lg bg-slate-950 border border-slate-700 px-2.5 py-2 text-xs text-white tabular-nums focus:outline-none focus:border-emerald-500" />
+            </div>
+          </div>
+          <button type="submit"
+                  class="w-full rounded-xl bg-slate-800 hover:bg-slate-700 text-emerald-300 font-semibold py-2 text-xs transition">
+            Lưu cấu hình phí &amp; thuế
+          </button>
+        </form>
+      </div>
+
+      <!-- Account Card -->
       <div class="glass-card rounded-2xl p-4 space-y-3">
         <h3 class="text-sm font-semibold text-white">Tài khoản</h3>
         <p class="text-xs text-slate-400">Đang đăng nhập: <span id="settings-email" class="text-slate-200 font-medium">--</span></p>
@@ -202,11 +317,11 @@
     </footer>
   </main>
 
-  <!-- Add / Edit Portfolio Modal -->
+  <!-- ==================== MODAL 1: ADD / EDIT PORTFOLIO ==================== -->
   <div id="portfolio-modal" class="hidden fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4">
     <div class="w-full sm:max-w-md bg-slate-900 border border-slate-700 rounded-t-2xl sm:rounded-2xl p-5 space-y-4 max-h-[90vh] overflow-y-auto">
       <div class="flex items-center justify-between">
-        <h3 id="modal-title" class="text-base font-bold text-white">Nhập lệnh Mua / Bán</h3>
+        <h3 id="modal-title" class="text-base font-bold text-white">Nhập lệnh Mua</h3>
         <button id="btn-close-modal" class="text-slate-400 hover:text-white text-lg px-2">✕</button>
       </div>
 
@@ -214,7 +329,7 @@
         <div class="grid grid-cols-2 gap-3">
           <div>
             <label class="block text-xs text-slate-300 mb-1">Mã cổ phiếu *</label>
-            <input id="pf-ticker" type="text" required maxlength="5" placeholder="VD: FPT"
+            <input id="pf-ticker" type="text" required maxlength="5" placeholder="VD: HPG"
                    class="w-full uppercase rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500" />
           </div>
           <div>
@@ -230,7 +345,7 @@
         <div class="grid grid-cols-2 gap-3">
           <div>
             <label class="block text-xs text-slate-300 mb-1">Giá mua (VNĐ) *</label>
-            <input id="pf-buy-price" type="number" required min="100" step="10" placeholder="25500"
+            <input id="pf-buy-price" type="number" required min="100" step="1" placeholder="21750"
                    class="w-full rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-white tabular-nums focus:outline-none focus:border-emerald-500" />
           </div>
           <div>
@@ -251,12 +366,17 @@
             <select id="pf-status"
                     class="w-full rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-white focus:outline-none focus:border-emerald-500">
               <option value="holding">Đang giữ (holding)</option>
-              <option value="closed">Đã bán hết (closed)</option>
+              <option value="closed">Đã đóng (closed)</option>
             </select>
           </div>
         </div>
 
-        <div class="flex items-center gap-2 pt-1">
+        <div id="pf-deduct-cash-wrap" class="flex items-center gap-2 pt-1">
+          <input id="pf-deduct-cash" type="checkbox" checked class="w-4 h-4 accent-sky-500 rounded" />
+          <label for="pf-deduct-cash" class="text-xs text-slate-300">Tự động trừ tiền mặt lưu hành (gồm phí mua)</label>
+        </div>
+
+        <div class="flex items-center gap-2">
           <input id="pf-sold-half" type="checkbox" class="w-4 h-4 accent-emerald-500 rounded" />
           <label for="pf-sold-half" class="text-xs text-slate-300">Đã chốt 1/2 khóa lãi (bật Trailing Stop -8%)</label>
         </div>
@@ -275,6 +395,136 @@
             Lưu vào Firestore
           </button>
         </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ==================== MODAL 2: DEPOSIT / WITHDRAW CASH ==================== -->
+  <div id="cashflow-modal" class="hidden fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4">
+    <div class="w-full sm:max-w-md bg-slate-900 border border-slate-700 rounded-t-2xl sm:rounded-2xl p-5 space-y-4 max-h-[90vh] overflow-y-auto">
+      <div class="flex items-center justify-between">
+        <h3 class="text-base font-bold text-white">Nạp / Rút tiền đầu tư</h3>
+        <button id="btn-close-cashflow" class="text-slate-400 hover:text-white text-lg px-2">✕</button>
+      </div>
+
+      <form id="cashflow-form" class="space-y-3">
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="block text-xs text-slate-300 mb-1">Loại giao dịch</label>
+            <select id="cf-type"
+                    class="w-full rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-white focus:outline-none focus:border-sky-500">
+              <option value="deposit">+ Nạp tiền vào</option>
+              <option value="withdraw">- Rút tiền ra</option>
+            </select>
+          </div>
+          <div>
+            <label class="block text-xs text-slate-300 mb-1">Ngày *</label>
+            <input id="cf-date" type="date" required
+                   class="w-full rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-white focus:outline-none focus:border-sky-500" />
+          </div>
+        </div>
+
+        <div>
+          <label class="block text-xs text-slate-300 mb-1">Số tiền (VNĐ) *</label>
+          <input id="cf-amount" type="number" required min="1000" step="1000" placeholder="500000"
+                 class="w-full rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-white tabular-nums focus:outline-none focus:border-sky-500" />
+        </div>
+
+        <div>
+          <label class="block text-xs text-slate-300 mb-1">Ghi chú</label>
+          <input id="cf-note" type="text" placeholder="Nạp vốn tháng này / Cổ tức tiền mặt..."
+                 class="w-full rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-xs text-white focus:outline-none focus:border-sky-500" />
+        </div>
+
+        <button type="submit" id="btn-save-cashflow"
+                class="w-full rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-semibold py-2.5 text-sm transition">
+          Xác nhận giao dịch tiền
+        </button>
+      </form>
+
+      <div class="border-t border-slate-800 pt-3 space-y-2">
+        <p class="text-xs font-semibold text-slate-300">Lịch sử nạp / rút gần đây</p>
+        <div id="cashflow-history-list" class="space-y-1.5 max-h-40 overflow-y-auto text-xs"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== MODAL 3: SYNC ACTUAL CASH BALANCE ==================== -->
+  <div id="sync-cash-modal" class="hidden fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4">
+    <div class="w-full sm:max-w-md bg-slate-900 border border-slate-700 rounded-t-2xl sm:rounded-2xl p-5 space-y-4">
+      <div class="flex items-center justify-between">
+        <h3 class="text-base font-bold text-white">Đồng bộ số dư tiền mặt thực tế</h3>
+        <button id="btn-close-sync-cash" class="text-slate-400 hover:text-white text-lg px-2">✕</button>
+      </div>
+      <p class="text-xs text-slate-400">Nhập đúng số tiền mặt lưu hành (sức mua còn lại) và tổng vốn đã nạp thực tế trên app ZaloPay / DNSE của bạn để khớp 100%.</p>
+
+      <form id="sync-cash-form" class="space-y-3">
+        <div>
+          <label class="block text-xs text-slate-300 mb-1">Tiền mặt lưu hành hiện có (VNĐ) *</label>
+          <input id="sync-cash-balance" type="number" required min="0" step="1"
+                 class="w-full rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-white tabular-nums focus:outline-none focus:border-emerald-500" />
+        </div>
+        <div>
+          <label class="block text-xs text-slate-300 mb-1">Tổng vốn bạn đã nạp ròng (VNĐ) *</label>
+          <input id="sync-total-deposited" type="number" required min="0" step="1"
+                 class="w-full rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-white tabular-nums focus:outline-none focus:border-emerald-500" />
+        </div>
+        <button type="submit"
+                class="w-full rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold py-2.5 text-sm transition">
+          Lưu đồng bộ
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <!-- ==================== MODAL 4: SELL / TAKE PROFIT ==================== -->
+  <div id="sell-modal" class="hidden fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4">
+    <div class="w-full sm:max-w-md bg-slate-900 border border-slate-700 rounded-t-2xl sm:rounded-2xl p-5 space-y-4">
+      <div class="flex items-center justify-between">
+        <h3 id="sell-modal-title" class="text-base font-bold text-white">Bán / Chốt lời</h3>
+        <button id="btn-close-sell" class="text-slate-400 hover:text-white text-lg px-2">✕</button>
+      </div>
+
+      <form id="sell-form" class="space-y-3">
+        <input id="sell-ticker" type="hidden" />
+        <div class="flex gap-2">
+          <button type="button" id="btn-sell-half-preset"
+                  class="flex-1 py-1.5 rounded-lg bg-amber-500/20 text-amber-300 border border-amber-500/40 text-xs font-semibold">
+            Chốt 1/2
+          </button>
+          <button type="button" id="btn-sell-all-preset"
+                  class="flex-1 py-1.5 rounded-lg bg-rose-500/20 text-rose-300 border border-rose-500/40 text-xs font-semibold">
+            Bán toàn bộ
+          </button>
+        </div>
+
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="block text-xs text-slate-300 mb-1">Giá bán (VNĐ) *</label>
+            <input id="sell-price" type="number" required min="100" step="1"
+                   class="w-full rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-white tabular-nums focus:outline-none focus:border-amber-500" />
+          </div>
+          <div>
+            <label class="block text-xs text-slate-300 mb-1">Số lượng bán (CP) *</label>
+            <input id="sell-qty" type="number" required min="1" step="1"
+                   class="w-full rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-white tabular-nums focus:outline-none focus:border-amber-500" />
+          </div>
+        </div>
+
+        <div>
+          <label class="block text-xs text-slate-300 mb-1">Ngày bán *</label>
+          <input id="sell-date" type="date" required
+                 class="w-full rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-white focus:outline-none focus:border-amber-500" />
+        </div>
+
+        <div id="sell-preview" class="rounded-xl bg-slate-950/70 border border-slate-800 p-3 text-xs space-y-1">
+          <p class="text-slate-400">Nhập giá bán &amp; số lượng để xem tiền thực nhận sau thuế/phí.</p>
+        </div>
+
+        <button type="submit" id="btn-confirm-sell"
+                class="w-full rounded-xl bg-amber-600 hover:bg-amber-500 text-white font-semibold py-2.5 text-sm transition">
+          Xác nhận bán &amp; Cộng tiền về tài khoản
+        </button>
       </form>
     </div>
   </div>

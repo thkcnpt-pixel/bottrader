@@ -3,7 +3,6 @@
 importScripts("https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js");
 importScripts("https://www.gstatic.com/firebasejs/10.12.5/firebase-messaging-compat.js");
 
-// Điền cùng cấu hình Firebase Web App như trong frontend/firebase-config.js
 const SW_FIREBASE_CONFIG = {
   apiKey: "AIzaSyAsZ8cXc5UwLkvW2nLoqZz0KaOOioGLo1E",
   authDomain: "bottrader-e12ec.firebaseapp.com",
@@ -14,7 +13,7 @@ const SW_FIREBASE_CONFIG = {
   measurementId: "G-FREWZGJ6W6"
 };
 
-const CACHE_NAME = "vn-swing-bot-v1";
+const CACHE_NAME = "vn-swing-bot-v2";
 const SHELL_ASSETS = [
   "./",
   "./index.html",
@@ -35,13 +34,15 @@ self.addEventListener("activate", (event) => {
   event.waitUntil(
     caches.keys().then((keys) =>
       Promise.all(keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k)))
-    )
+    ).then(() => self.clients.claim())
   );
-  self.clients.claim();
 });
 
 self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET") return;
+  const reqUrl = new URL(event.request.url);
+  // Only intercept same-origin requests so Firebase/Google APIs are never interfered with
+  if (reqUrl.origin !== self.location.origin) return;
   event.respondWith(
     fetch(event.request).catch(() => caches.match(event.request))
   );
