@@ -168,6 +168,16 @@ class FirebaseClient:
         str_data = {str(k): str(v) for k, v in (data or {}).items()}
         message = self._messaging.MulticastMessage(
             notification=self._messaging.Notification(title=title, body=body),
+            android=self._messaging.AndroidConfig(
+                priority="normal",
+                notification=self._messaging.AndroidNotification(
+                    channel_id="swingbot_silent",
+                    default_sound=False,
+                    default_vibrate_timings=False,
+                    default_light_settings=False,
+                    notification_priority="PRIORITY_LOW",
+                ),
+            ),
             data=str_data,
             tokens=tokens,
         )

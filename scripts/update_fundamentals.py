@@ -413,11 +413,15 @@ def run_update_fundamentals(limit: int = 0) -> None:
     all_tickers = [item["ticker"] for item in listed]
     actual_prices_map = vn.get_actual_prices_batch(all_tickers)
 
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     existing_cache = fb.get_all_fundamentals()
     passed_count = 0
     liquid_count = 0
+    total_listed = len(listed)
 
-    for idx, item in enumerate(listed, 1):
+    def _process_one(idx_item: Tuple[int, Dict[str, str]]) -> Tuple[bool, bool]:
+        idx, item = idx_item
         ticker = item["ticker"]
         exchange = item["exchange"]
         sector_group = item["sector_group"]
@@ -425,14 +429,13 @@ def run_update_fundamentals(limit: int = 0) -> None:
         try:
             df_ohlcv = vn.get_ohlcv(ticker, days=45)
             if df_ohlcv is None or len(df_ohlcv) < 20:
-                continue
+                return (False, False)
 
             recent_20 = df_ohlcv.tail(20)
             avg_value_20d = float((recent_20["close"] * recent_20["volume"]).mean())
             if avg_value_20d < MIN_AVG_VALUE_20D_VND:
-                continue
+                return (False, False)
 
-            liquid_count += 1
             actual_close = float(
                 actual_prices_map.get(ticker, {}).get("actual_close") or recent_20.iloc[-1]["close"]
             )
@@ -448,7 +451,6 @@ def run_update_fundamentals(limit: int = 0) -> None:
             )
 
             if not has_any_bctc:
-                # Preserve previous cached score if available and mark missing_bctc=True
                 prev_doc = existing_cache.get(ticker)
                 if prev_doc and float(prev_doc.get("score", 0)) >= MIN_FUNDAMENTAL_SCORE:
                     fb.save_fundamental(
@@ -461,13 +463,12 @@ def run_update_fundamentals(limit: int = 0) -> None:
                             "avg_value_20d": round(avg_value_20d, 0),
                         },
                     )
-                    passed_count += 1
-                continue
+                    return (True, True)
+                return (True, False)
 
             metrics, missing_bctc = extract_fundamental_metrics(statements, sector_group)
             score = score_financial(metrics) if sector_group == "financial" else score_non_financial(metrics)
 
-            # If latest quarter is missing and previous cached score was higher/valid, retain previous score
             if missing_bctc and ticker in existing_cache:
                 prev_score = float(existing_cache[ticker].get("score", 0))
                 if prev_score > score:
@@ -487,11 +488,10 @@ def run_update_fundamentals(limit: int = 0) -> None:
                     "metrics": metrics,
                 }
                 fb.save_fundamental(ticker, doc_payload)
-                passed_count += 1
                 logger.info(
                     "[%d/%d] SAVED %s (%s | %s) | Score=%.1f | fit_500k=%s | missing_bctc=%s",
                     idx,
-                    len(listed),
+                    total_listed,
                     ticker,
                     exchange,
                     sector_group,
@@ -499,17 +499,25 @@ def run_update_fundamentals(limit: int = 0) -> None:
                     fit_500k,
                     missing_bctc,
                 )
+                return (True, True)
 
-            # Gentle pacing to avoid rate limiting VCI/TCBS APIs
-            time.sleep(0.25)
-
+            return (True, False)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Error processing %s: %s", ticker, exc)
-            continue
+            return (False, False)
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = [executor.submit(_process_one, pair) for pair in enumerate(listed, 1)]
+        for fut in as_completed(futures):
+            is_liq, is_saved = fut.result()
+            if is_liq:
+                liquid_count += 1
+            if is_saved:
+                passed_count += 1
 
     logger.info(
         "Tier 1 complete: scanned=%d, passed_liquidity=%d, saved_fundamentals(>=%.0f)=%d",
-        len(listed),
+        total_listed,
         liquid_count,
         MIN_FUNDAMENTAL_SCORE,
         passed_count,

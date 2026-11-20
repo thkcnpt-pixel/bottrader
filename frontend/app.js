@@ -1174,6 +1174,23 @@ async function registerNativeAndroidPush(nativePush, feedback) {
     return;
   }
 
+  // Create strictly silent Android Notification Channel (importance 2 = LOW: no sound, no vibration)
+  if (typeof nativePush.createChannel === "function") {
+    try {
+      await nativePush.createChannel({
+        id: "swingbot_silent",
+        name: "SwingBot Im lặng",
+        description: "Thông báo chứng khoán im lặng tuyệt đối (không âm thanh, không rung)",
+        importance: 2,
+        visibility: 1,
+        vibration: false,
+        lights: false,
+      });
+    } catch (e) {
+      console.warn("createChannel warning:", e);
+    }
+  }
+
   if (!nativePushListenersBound) {
     nativePushListenersBound = true;
 
