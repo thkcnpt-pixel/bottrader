@@ -210,9 +210,9 @@ function bindEvents() {
     await refreshAllData();
   });
 
-  $("btn-live-price").addEventListener("click", handleFetchInstantPrices);
-  $("btn-rescan-candidates").addEventListener("click", handleTriggerRescanCandidates);
-  $("gh-token-form").addEventListener("submit", handleSaveGhToken);
+  $("btn-live-price")?.addEventListener("click", handleFetchInstantPrices);
+  $("btn-rescan-candidates")?.addEventListener("click", handleTriggerRescanCandidates);
+  $("gh-token-form")?.addEventListener("submit", handleSaveGhToken);
   loadGhTokenStatus();
 
   // Bottom tabs

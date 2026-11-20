@@ -77,12 +77,18 @@
 
     <!-- ==================== TAB 1: DASHBOARD (BÁO CÁO NGÀY) ==================== -->
     <section id="tab-dashboard" class="space-y-4">
-      <div class="flex items-center justify-between gap-2">
+      <div class="flex items-center justify-between gap-2 flex-wrap">
         <h2 class="text-base font-bold text-white">Báo cáo ngày</h2>
-        <select id="report-date-select"
-                class="rounded-lg bg-slate-900 border border-slate-700 px-3 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-emerald-500">
-          <option value="">Đang tải...</option>
-        </select>
+        <div class="flex items-center gap-2">
+          <button id="btn-rescan-candidates" title="Kích hoạt Bot quét lại mã tiềm năng ngay lập tức"
+                  class="px-2.5 py-1.5 rounded-lg bg-sky-600/25 hover:bg-sky-600/40 border border-sky-500/40 text-sky-300 text-xs font-semibold transition">
+            🔍 Quét tiềm năng
+          </button>
+          <select id="report-date-select"
+                  class="rounded-lg bg-slate-900 border border-slate-700 px-3 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-emerald-500">
+            <option value="">Đang tải...</option>
+          </select>
+        </div>
       </div>
 
       <!-- VN-Index Warning Banner -->

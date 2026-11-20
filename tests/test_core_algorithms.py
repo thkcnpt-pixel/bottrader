@@ -203,10 +203,16 @@ class TestNewsAndGeminiAndFrontendRules(unittest.TestCase):
         )
 
     def test_frontend_ui_constraints(self):
+        import re
         html = (ROOT_DIR / "frontend" / "index.html").read_text(encoding="utf-8")
+        js = (ROOT_DIR / "frontend" / "app.js").read_text(encoding="utf-8")
         self.assertIn("Dev by Thkc", html)
         self.assertNotIn("qrcode", html.lower())
         self.assertNotIn("qr-code", html.lower())
+        html_ids = set(re.findall(r'id="([^"]+)"', html))
+        js_ids = set(re.findall(r'\$\("([^"]+)"\)', js))
+        missing_ids = sorted(js_ids - html_ids)
+        self.assertEqual(missing_ids, [], f"Missing DOM IDs in index.html: {missing_ids}")
 
 
 if __name__ == "__main__":
