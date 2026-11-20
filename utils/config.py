@@ -29,7 +29,7 @@ VNSTOCK_FALLBACK_SOURCE = os.getenv("VNSTOCK_FALLBACK_SOURCE", "TCBS").upper()
 # Gemini AI config
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip()
-GEMINI_FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-2.5-flash-lite").strip()
+GEMINI_FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-3.5-flash-lite").strip()
 GEMINI_SLEEP_SECONDS = float(os.getenv("GEMINI_SLEEP_SECONDS", "5.0"))
 
 # Execution flags

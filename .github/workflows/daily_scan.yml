@@ -35,7 +35,7 @@ jobs:
           FIREBASE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_MODEL: gemini-3.8-flash
-          GEMINI_FALLBACK_MODEL: gemini-2.5-flash-lite
+          GEMINI_FALLBACK_MODEL: gemini-3.5-flash-lite
           VNSTOCK_PRIMARY_SOURCE: VCI
           VNSTOCK_FALLBACK_SOURCE: TCBS
           PYTHONPATH: .

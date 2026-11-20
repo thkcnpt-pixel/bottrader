@@ -7,7 +7,7 @@ Design rules:
       * AI 2 (Phe Gấu — Phản biện rủi ro): profit_quality, negative_news, dividend_trap, biggest_risk
       * AI 3 (Trọng tài — Chốt phương án tốt nhất cho vốn 500k): ai_referee_verdict
   - Sleeps 5s between calls to respect Free Tier RPM limits.
-  - Uses gemini-2.5-flash with automatic fallback to gemini-2.0-flash.
+  - Uses gemini-3.8-flash with automatic retry on transient 503/429 and fallback to gemini-3.5-flash-lite.
 """
 
 from __future__ import annotations
@@ -27,6 +27,20 @@ from utils.config import (
 )
 
 logger = logging.getLogger(__name__)
+
+_TRANSIENT_ERROR_MARKERS = (
+    "503",
+    "429",
+    "UNAVAILABLE",
+    "RESOURCE_EXHAUSTED",
+    "OVERLOADED",
+    "TRY AGAIN LATER",
+)
+
+
+def _is_transient_error(exc: Exception) -> bool:
+    msg = str(exc).upper()
+    return any(marker in msg for marker in _TRANSIENT_ERROR_MARKERS)
 
 
 class RiskCritiqueSchema(BaseModel):
@@ -120,12 +134,16 @@ class GeminiAnalyst:
         primary_model: str = GEMINI_MODEL,
         fallback_model: str = GEMINI_FALLBACK_MODEL,
         sleep_seconds: float = GEMINI_SLEEP_SECONDS,
+        max_retries_per_model: int = 2,
+        retry_backoff_seconds: float = 4.0,
     ) -> None:
         self.api_key = api_key
         self.models = [primary_model]
         if fallback_model and fallback_model != primary_model:
             self.models.append(fallback_model)
         self.sleep_seconds = sleep_seconds
+        self.max_retries_per_model = max(0, max_retries_per_model)
+        self.retry_backoff_seconds = max(0.0, retry_backoff_seconds)
         self._call_count = 0
 
     def analyze_risk(
@@ -156,28 +174,48 @@ class GeminiAnalyst:
         last_err = ""
 
         for model_name in self.models:
-            try:
-                response = client.models.generate_content(
-                    model=model_name,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        response_mime_type="application/json",
-                        response_schema=RiskCritiqueSchema,
-                        temperature=0.25,
-                    ),
-                )
-                raw_text = (response.text or "").strip()
-                parsed = json.loads(raw_text)
-                return {
-                    "ai_bull_thesis": str(parsed.get("ai_bull_thesis", "Không có dữ liệu.")),
-                    "profit_quality": str(parsed.get("profit_quality", "Không có dữ liệu.")),
-                    "negative_news": str(parsed.get("negative_news", "Không có dữ liệu.")),
-                    "dividend_trap": str(parsed.get("dividend_trap", "Không có dữ liệu.")),
-                    "biggest_risk": str(parsed.get("biggest_risk", "Không có dữ liệu.")),
-                    "ai_referee_verdict": str(parsed.get("ai_referee_verdict", "Không có dữ liệu.")),
-                }
-            except Exception as exc:  # noqa: BLE001
-                last_err = str(exc)
-                logger.warning("Gemini model=%s failed for %s: %s", model_name, ticker, exc)
+            attempts = self.max_retries_per_model + 1
+            for attempt in range(1, attempts + 1):
+                try:
+                    response = client.models.generate_content(
+                        model=model_name,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(
+                            response_mime_type="application/json",
+                            response_schema=RiskCritiqueSchema,
+                            temperature=0.25,
+                        ),
+                    )
+                    raw_text = (response.text or "").strip()
+                    parsed = json.loads(raw_text)
+                    return {
+                        "ai_bull_thesis": str(parsed.get("ai_bull_thesis", "Không có dữ liệu.")),
+                        "profit_quality": str(parsed.get("profit_quality", "Không có dữ liệu.")),
+                        "negative_news": str(parsed.get("negative_news", "Không có dữ liệu.")),
+                        "dividend_trap": str(parsed.get("dividend_trap", "Không có dữ liệu.")),
+                        "biggest_risk": str(parsed.get("biggest_risk", "Không có dữ liệu.")),
+                        "ai_referee_verdict": str(parsed.get("ai_referee_verdict", "Không có dữ liệu.")),
+                    }
+                except Exception as exc:  # noqa: BLE001
+                    last_err = str(exc)
+                    logger.warning(
+                        "Gemini model=%s failed for %s (attempt %d/%d): %s",
+                        model_name,
+                        ticker,
+                        attempt,
+                        attempts,
+                        exc,
+                    )
+                    if attempt < attempts and _is_transient_error(exc):
+                        wait_s = self.retry_backoff_seconds * attempt
+                        if wait_s > 0:
+                            logger.info(
+                                "Retrying Gemini model=%s in %.1fs...",
+                                model_name,
+                                wait_s,
+                            )
+                            time.sleep(wait_s)
+                        continue
+                    break
 
         return _fallback_critique(last_err[:120] or "lỗi kết nối")
