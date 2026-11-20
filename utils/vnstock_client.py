@@ -417,13 +417,22 @@ class VnstockClient:
         rat_df = None
         if isinstance(ratio_data, dict) and ratio_data:
             rat_df = pd.DataFrame([{
-                "roe": ratio_data.get("roe"),
-                "pe": ratio_data.get("pe"),
-                "pb": ratio_data.get("pb"),
-                "debt_on_equity": ratio_data.get("de") or ratio_data.get("debtToEquity"),
+                "roe": ratio_data.get("roe") or ratio_data.get("roae"),
+                "pe": ratio_data.get("pe") or ratio_data.get("priceToEarning"),
+                "pb": ratio_data.get("pb") or ratio_data.get("priceToBook"),
+                "debt_on_equity": ratio_data.get("de") or ratio_data.get("debtToEquity") or ratio_data.get("debtOnEquity"),
                 "bad_debt": ratio_data.get("badDebtRatio") or ratio_data.get("npl"),
                 "llr": ratio_data.get("llr"),
             }])
+        if not getattr(self, "_logged_iq_keys", False):
+            self._logged_iq_keys = True
+            logger.info(
+                "[VIETCAP_IQ_KEYS] %s | ratio_keys=%s | inc_q0_keys=%s | cf_q0_keys=%s",
+                sym,
+                list(ratio_data.keys())[:20] if isinstance(ratio_data, dict) else type(ratio_data).__name__,
+                list(inc_quarters[0].keys())[:20] if inc_quarters else [],
+                list(cf_quarters[0].keys())[:20] if cf_quarters else [],
+            )
 
         return {
             "income_statement": inc_df,
