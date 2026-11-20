@@ -359,9 +359,9 @@ class VnstockClient:
 
         return result
 
-    # -------------------- 4. Financial Statements (3-Source: VCI GraphQL -> VNDirect v4 -> TCBS) --------------------
+    # -------------------- 4. Financial Statements (3-Source: VCI GraphQL -> Vietcap IQ REST -> VNDirect/TCBS) --------------------
     def _fetch_bctc_vci_graphql(self, sym: str) -> Dict[str, Optional[pd.DataFrame]]:
-        """Source 1: Vietcap (VCI) GraphQL quarterly financial ratios & statements."""
+        """Source 1: Vietcap (VCI) GraphQL quarterly financial ratios (exact schema)."""
         query = """
         query CompanyFinancialRatio($ticker: String!, $period: String!) {
           CompanyFinancialRatio(ticker: $ticker, period: $period) {
@@ -380,12 +380,6 @@ class VnstockClient:
               eps
               bvps
               ebitda
-              ocf
-              badDebt
-              llr
-              totalAsset
-              totalEquity
-              totalLiability
             }
           }
         }
@@ -395,6 +389,10 @@ class VnstockClient:
             "https://trading.vietcap.com.vn/data-mt/graphql",
             json_body={"query": query, "variables": {"ticker": sym, "period": "Q"}},
         )
+        if isinstance(data, dict) and data.get("errors"):
+            logger.warning("[BCTC] VCI_GRAPHQL errors for %s: %s", sym, data["errors"][0].get("message"))
+            return {}
+
         rows = (
             (data or {})
             .get("data", {})
@@ -409,16 +407,44 @@ class VnstockClient:
             df = df.sort_values(["yearReport", "lengthReport"], ascending=[False, False]).reset_index(drop=True)
         df = df.head(8)
 
-        # Map into the 4 standard statement tables expected by Tier 1 scorer
         inc_cols = [c for c in ("yearReport", "lengthReport", "revenue", "netProfit", "revenueGrowth", "netProfitGrowth") if c in df.columns]
-        bal_cols = [c for c in ("yearReport", "lengthReport", "totalAsset", "totalEquity", "totalLiability", "de") if c in df.columns]
-        cf_cols = [c for c in ("yearReport", "lengthReport", "ocf") if c in df.columns]
-        rat_cols = [c for c in ("yearReport", "lengthReport", "roe", "roa", "de", "pe", "pb", "badDebt", "llr") if c in df.columns]
+        bal_cols = [c for c in ("yearReport", "lengthReport", "de", "bvps") if c in df.columns]
+        rat_cols = [c for c in ("yearReport", "lengthReport", "roe", "roa", "de", "pe", "pb", "eps") if c in df.columns]
 
         inc_df = df[inc_cols].rename(columns={"netProfit": "post_tax_profit"}) if inc_cols else None
-        bal_df = df[bal_cols].rename(columns={"totalAsset": "total assets", "totalEquity": "owner's equity", "totalLiability": "liabilities"}) if bal_cols else None
-        cf_df = df[cf_cols].rename(columns={"ocf": "operating"}) if cf_cols and df["ocf"].notna().any() else None
-        rat_df = df[rat_cols].rename(columns={"de": "debt_on_equity", "badDebt": "bad_debt"}) if rat_cols else None
+        bal_df = df[bal_cols].rename(columns={"de": "debt_on_equity"}) if bal_cols else None
+        rat_df = df[rat_cols].rename(columns={"de": "debt_on_equity"}) if rat_cols else None
+
+        # Best-effort Operating Cash Flow from Vietcap IQ REST endpoint
+        cf_df = None
+        try:
+            cf_resp = self._request_json(
+                "GET",
+                f"https://iq.vietcap.com.vn/api/iq-insight-service/v1/company/{sym}/financial-statement",
+                params={"section": "CASH_FLOW"},
+                headers={"Referer": "https://iq.vietcap.com.vn/", "Origin": "https://iq.vietcap.com.vn"},
+            )
+            cf_years = (cf_resp or {}).get("data", {}).get("quarters", [])
+            if cf_years:
+                cf_rows = []
+                for qrow in cf_years[:8]:
+                    ocf_val = (
+                        qrow.get("cfa1")
+                        or qrow.get("cfb1")
+                        or qrow.get("cfs1")
+                        or qrow.get("cfa18")
+                        or qrow.get("cfb20")
+                    )
+                    if ocf_val is not None:
+                        cf_rows.append({
+                            "yearReport": qrow.get("yearReport"),
+                            "lengthReport": qrow.get("lengthReport"),
+                            "operating": float(ocf_val),
+                        })
+                if cf_rows:
+                    cf_df = pd.DataFrame(cf_rows)
+        except Exception:  # noqa: BLE001
+            pass
 
         return {
             "income_statement": inc_df,
@@ -428,44 +454,32 @@ class VnstockClient:
         }
 
     def _fetch_bctc_vndirect(self, sym: str) -> Dict[str, Optional[pd.DataFrame]]:
-        """Source 2: VNDirect Finfo API v4 quarterly financial statements & ratios."""
+        """Source 2: VNDirect Finfo API v4 quarterly financial statements & ratios (fast 5s timeout)."""
         headers = {"Referer": "https://dstock.vndirect.com.vn/"}
 
-        # 1. Fetch ratios across recent quarters
-        rat_resp = self._request_json(
-            "GET",
+        def _get_fast(url: str, params: Dict[str, Any]) -> Any:
+            r = self.session.get(url, params=params, headers=headers, timeout=5)
+            r.raise_for_status()
+            return r.json()
+
+        rat_resp = _get_fast(
             "https://finfo-api.vndirect.com.vn/v4/ratios",
-            params={
-                "q": f"code:{sym}~reportType:QUARTER",
-                "sort": "reportDate:desc",
-                "size": 400,
-            },
-            headers=headers,
+            {"q": f"code:{sym}~reportType:QUARTER", "sort": "reportDate:desc", "size": 400},
         )
         rat_rows = rat_resp.get("data", []) if isinstance(rat_resp, dict) else []
 
-        # 2. Fetch latest snapshot ratios (P/E, P/B, ROE, D/E, YoY growth, NPL)
-        latest_resp = self._request_json(
-            "GET",
+        latest_resp = _get_fast(
             "https://finfo-api.vndirect.com.vn/v4/ratios/latest",
-            params={
+            {
                 "filter": "ratioCode:PRICE_TO_EARNINGS,PRICE_TO_BOOK,ROAE_TR_AVG5Q,NET_PROFIT_YOY,REVENUE_YOY,DEBT_TO_EQUITY,BAD_DEBT_RATIO,LLR",
                 "where": f"code:{sym}",
             },
-            headers=headers,
         )
         latest_rows = latest_resp.get("data", []) if isinstance(latest_resp, dict) else []
 
-        # 3. Fetch quarterly financial statement line items (Income, Balance Sheet, Cash Flow)
-        fs_resp = self._request_json(
-            "GET",
+        fs_resp = _get_fast(
             "https://finfo-api.vndirect.com.vn/v4/financial_statements",
-            params={
-                "q": f"code:{sym}~reportType:QUARTER",
-                "sort": "fiscalDate:desc",
-                "size": 600,
-            },
-            headers=headers,
+            {"q": f"code:{sym}~reportType:QUARTER", "sort": "fiscalDate:desc", "size": 600},
         )
         fs_rows = fs_resp.get("data", []) if isinstance(fs_resp, dict) else []
 
