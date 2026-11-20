@@ -1,0 +1,18 @@
+{
+  "name": "swingbot-vn-android",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Capacitor Android wrapper for VN Stock Swing Bot with Native FCM Push Notifications",
+  "scripts": {
+    "cap:add:android": "cap add android",
+    "cap:sync": "cap sync android"
+  },
+  "dependencies": {
+    "@capacitor/android": "^6.1.2",
+    "@capacitor/core": "^6.1.2",
+    "@capacitor/push-notifications": "^6.0.2"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^6.1.2"
+  }
+}

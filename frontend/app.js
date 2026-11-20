@@ -1101,10 +1101,49 @@ async function handleSaveFeeSettings(e) {
   renderPortfolio();
 }
 
-// -------------------- FCM Push Notifications (Fixed for GitHub Pages Subpath) --------------------
+// -------------------- FCM Push Notifications (Native Android APK + Web Fallback) --------------------
+function getNativePushPlugin() {
+  const cap = window.Capacitor;
+  if (cap && typeof cap.isNativePlatform === "function" && cap.isNativePlatform()) {
+    return cap.Plugins?.PushNotifications || null;
+  }
+  return null;
+}
+
+let nativePushListenersBound = false;
+
+async function saveFcmTokenToFirestore(token) {
+  await setDoc(
+    doc(db, "settings", "fcm_tokens"),
+    {
+      tokens: arrayUnion(token),
+      updated_at: new Date().toISOString(),
+    },
+    { merge: true }
+  );
+}
+
 async function loadFcmSettings() {
   const badge = $("fcm-status-badge");
-  if (!("Notification" in window)) {
+  const nativePush = getNativePushPlugin();
+
+  if (nativePush) {
+    try {
+      const perm = await nativePush.checkPermissions();
+      if (perm.receive === "granted") {
+        badge.textContent = "APK Native • Đã bật";
+        badge.className = "px-2.5 py-1 rounded-full text-[11px] font-semibold bg-emerald-500/20 text-emerald-300 shrink-0";
+      } else if (perm.receive === "denied") {
+        badge.textContent = "APK • Bị chặn";
+        badge.className = "px-2.5 py-1 rounded-full text-[11px] font-semibold bg-rose-500/20 text-rose-300 shrink-0";
+      } else {
+        badge.textContent = "APK Native • Chưa bật";
+        badge.className = "px-2.5 py-1 rounded-full text-[11px] font-semibold bg-sky-500/20 text-sky-300 shrink-0";
+      }
+    } catch {
+      badge.textContent = "APK Native";
+    }
+  } else if (!("Notification" in window)) {
     badge.textContent = "Không hỗ trợ";
   } else if (Notification.permission === "granted") {
     badge.textContent = "Đã cấp quyền";
@@ -1125,26 +1164,79 @@ async function loadFcmSettings() {
   }
 }
 
+async function registerNativeAndroidPush(nativePush, feedback) {
+  const perm = await nativePush.requestPermissions();
+  if (perm.receive !== "granted") {
+    feedback.className = "text-xs text-rose-400";
+    feedback.textContent = "Bạn chưa cấp quyền thông báo cho ứng dụng SwingBot VN.";
+    return;
+  }
+
+  if (!nativePushListenersBound) {
+    nativePushListenersBound = true;
+
+    nativePush.addListener("pushNotificationReceived", (notification) => {
+      showToast(`${notification.title || "SwingBot"}: ${notification.body || ""}`, 6000);
+    });
+
+    nativePush.addListener("pushNotificationActionPerformed", () => {
+      refreshAllData();
+    });
+  }
+
+  const token = await new Promise((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error("Hết thời gian lấy Native FCM Token (15s). Kiểm tra Google Play Services.")),
+      15000
+    );
+    const regHandle = nativePush.addListener("registration", (t) => {
+      clearTimeout(timer);
+      regHandle?.remove?.();
+      errHandle?.remove?.();
+      resolve(t.value);
+    });
+    const errHandle = nativePush.addListener("registrationError", (err) => {
+      clearTimeout(timer);
+      regHandle?.remove?.();
+      errHandle?.remove?.();
+      reject(new Error(JSON.stringify(err)));
+    });
+    nativePush.register();
+  });
+
+  if (!token) throw new Error("Không lấy được Native FCM token.");
+  await saveFcmTokenToFirestore(token);
+  feedback.className = "text-xs text-emerald-400";
+  feedback.textContent = "✅ Đã đăng ký Native Push (APK) thành công! Máy sẽ nhận thông báo tức thì kể cả khi khóa màn hình.";
+  await loadFcmSettings();
+}
+
 async function handleRegisterFcmToken() {
   const feedback = $("fcm-feedback");
   const btn = $("btn-enable-fcm");
   feedback.classList.remove("hidden");
 
-  if (!messaging) {
-    feedback.className = "text-xs text-rose-400";
-    feedback.textContent = "Trình duyệt này không hỗ trợ Firebase Messaging (trên iOS, hãy 'Thêm vào Màn hình chính' trước).";
-    return;
-  }
-  if (!FCM_VAPID_KEY || FCM_VAPID_KEY.startsWith("REPLACE_")) {
-    feedback.className = "text-xs text-amber-300";
-    feedback.textContent = "Chưa điền FCM_VAPID_KEY trong frontend/firebase-config.js.";
-    return;
-  }
-
   btn.disabled = true;
-  btn.textContent = "Đang kích hoạt Service Worker & lấy FCM Token...";
+  btn.textContent = "Đang đăng ký Push Notification...";
 
   try {
+    const nativePush = getNativePushPlugin();
+    if (nativePush) {
+      await registerNativeAndroidPush(nativePush, feedback);
+      return;
+    }
+
+    if (!messaging) {
+      feedback.className = "text-xs text-rose-400";
+      feedback.textContent = "Trình duyệt này không hỗ trợ Firebase Messaging. Hãy mở bằng app SwingBot VN (.apk) để nhận thông báo ổn định nhất.";
+      return;
+    }
+    if (!FCM_VAPID_KEY || FCM_VAPID_KEY.startsWith("REPLACE_")) {
+      feedback.className = "text-xs text-amber-300";
+      feedback.textContent = "Chưa điền FCM_VAPID_KEY trong frontend/firebase-config.js.";
+      return;
+    }
+
     const perm = await Notification.requestPermission();
     if (perm !== "granted") {
       feedback.className = "text-xs text-rose-400";
@@ -1152,24 +1244,14 @@ async function handleRegisterFcmToken() {
       return;
     }
 
-    // Explicitly register and wait for active SW under current subpath (/bottrader/)
     const activeReg = await ensureActiveServiceWorker();
-
     const token = await getToken(messaging, {
       vapidKey: FCM_VAPID_KEY,
       serviceWorkerRegistration: activeReg,
     });
     if (!token) throw new Error("Không lấy được FCM token.");
 
-    await setDoc(
-      doc(db, "settings", "fcm_tokens"),
-      {
-        tokens: arrayUnion(token),
-        updated_at: new Date().toISOString(),
-      },
-      { merge: true }
-    );
-
+    await saveFcmTokenToFirestore(token);
     feedback.className = "text-xs text-emerald-400";
     feedback.textContent = "✅ Đã đăng ký thiết bị thành công! Bot sẽ bắn thông báo trực tiếp tới máy này.";
     await loadFcmSettings();
