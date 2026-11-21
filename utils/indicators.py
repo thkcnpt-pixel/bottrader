@@ -245,6 +245,66 @@ def detect_buy_signal(df: pd.DataFrame) -> Optional[Dict[str, Any]]:
     return None
 
 
+def detect_watchlist_candidate(df: pd.DataFrame) -> Optional[Dict[str, Any]]:
+    """Identify strong-fundamental stocks above MA50 that are close to a buy setup (Watchlist)."""
+    if df is None or len(df) < 55:
+        return None
+
+    data = add_technical_indicators(df)
+    curr = data.iloc[-1]
+
+    close_p = float(curr["close"])
+    ma20 = float(curr["ma20"])
+    ma50 = float(curr["ma50"])
+    rsi14 = float(curr["rsi14"])
+    vol = float(curr["volume"])
+    vol_ma20 = float(curr["vol_ma20"])
+
+    if any(np.isnan(x) for x in (close_p, ma20, ma50, rsi14, vol_ma20)) or ma20 <= 0 or ma50 <= 0 or vol_ma20 <= 0:
+        return None
+
+    if close_p <= ma50:
+        return None
+
+    trend_aligned = bool(ma20 > ma50)
+    dist_to_ma20_pct = round((close_p / ma20 - 1.0) * 100.0, 2)
+    dist_to_ma50_pct = round((close_p / ma50 - 1.0) * 100.0, 2)
+    vol_ratio = round(vol / vol_ma20, 2)
+
+    if trend_aligned and dist_to_ma20_pct > 3.0:
+        watch_reason = (
+            f"Xu hướng tốt trên MA20/MA50 (cách MA20 +{dist_to_ma20_pct:.1f}%) — "
+            f"chờ nhịp chỉnh về gần MA20 hoặc tích lũy nền chặt."
+        )
+    elif trend_aligned and -2.0 <= dist_to_ma20_pct <= 3.0:
+        watch_reason = (
+            f"Đang sát vùng MA20 ({dist_to_ma20_pct:+.1f}%), RSI={rsi14:.1f} — "
+            f"chờ nến cầu xác nhận hồi phục hoặc phiên bứt phá thanh khoản."
+        )
+    elif trend_aligned:
+        watch_reason = (
+            f"Đang chỉnh dưới MA20 ({dist_to_ma20_pct:+.1f}%) nhưng giữ vững MA50 — "
+            f"chờ giá lấy lại MA20."
+        )
+    else:
+        watch_reason = (
+            f"Giá đã vượt MA50 (+{dist_to_ma50_pct:.1f}%), RSI={rsi14:.1f} — "
+            f"chờ MA20 cắt lên MA50 để xác nhận xu hướng tăng."
+        )
+
+    return {
+        "close_adj": round(close_p, 2),
+        "ma20": round(ma20, 2),
+        "ma50": round(ma50, 2),
+        "rsi14": round(rsi14, 2),
+        "vol_ratio": vol_ratio,
+        "trend_aligned": trend_aligned,
+        "dist_to_ma20_pct": dist_to_ma20_pct,
+        "dist_to_ma50_pct": dist_to_ma50_pct,
+        "watch_reason": watch_reason,
+    }
+
+
 def evaluate_portfolio_position(
     position: Dict[str, Any],
     df_adj: pd.DataFrame,

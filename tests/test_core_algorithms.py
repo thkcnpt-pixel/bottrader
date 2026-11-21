@@ -131,6 +131,19 @@ class TestTechnicalIndicatorsAndSignals(unittest.TestCase):
         df = _make_ohlcv(closes)
         self.assertIsNone(detect_buy_signal(df))
 
+    def test_detect_watchlist_candidate(self):
+        from utils.indicators import detect_watchlist_candidate
+
+        df_up = _make_ohlcv(list(np.linspace(20_000, 35_000, 65)))
+        w = detect_watchlist_candidate(df_up)
+        self.assertIsNotNone(w)
+        self.assertTrue(w["trend_aligned"])
+        self.assertGreater(w["dist_to_ma50_pct"], 0)
+        self.assertIn("MA20", w["watch_reason"])
+
+        df_down = _make_ohlcv(list(np.linspace(35_000, 20_000, 65)))
+        self.assertIsNone(detect_watchlist_candidate(df_down))
+
 
 class TestPortfolioAndIntradayAlerts(unittest.TestCase):
     def test_portfolio_take_profit_half(self):

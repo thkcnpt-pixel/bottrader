@@ -488,6 +488,8 @@ function renderDailyReport(report) {
     });
   }
 
+  renderWatchlistCandidates(report.watchlist_candidates || []);
+
   if (candidates.length === 0) {
     listEl.innerHTML = `
       <div class="glass-card rounded-2xl p-6 text-center text-xs text-slate-400">
@@ -732,6 +734,72 @@ function renderDailyReport(report) {
       });
     });
   });
+}
+
+function renderWatchlistCandidates(watchlist) {
+  const wrapEl = $("watchlist-candidates-wrap");
+  const countEl = $("watchlist-count");
+  const listEl = $("watchlist-candidates-list");
+  if (!wrapEl || !listEl) return;
+
+  const items = Array.isArray(watchlist) ? watchlist : [];
+  if (items.length === 0) {
+    wrapEl.classList.add("hidden");
+    listEl.innerHTML = "";
+    if (countEl) countEl.textContent = "0 mã";
+    return;
+  }
+
+  wrapEl.classList.remove("hidden");
+  if (countEl) countEl.textContent = `${items.length} mã`;
+
+  listEl.innerHTML = items
+    .map((w) => {
+      const dist20 = Number(w.dist_to_ma20_pct || 0);
+      const dist20Label = `${dist20 >= 0 ? "+" : ""}${fmtNum(dist20, 1)}%`;
+      const trendBadge = w.trend_aligned
+        ? `<span class="px-2 py-0.5 rounded-md text-[11px] font-semibold bg-amber-500/20 text-amber-200 border border-amber-500/40">[Trên MA20 &amp; MA50]</span>`
+        : `<span class="px-2 py-0.5 rounded-md text-[11px] font-semibold bg-slate-700/60 text-slate-200 border border-slate-600/60">[Trên MA50]</span>`;
+
+      return `
+        <article class="glass-card rounded-2xl p-3.5 space-y-2.5 border border-amber-500/20">
+          <div class="flex items-start justify-between gap-2">
+            <div>
+              <div class="flex items-center gap-2 flex-wrap">
+                <span class="text-base font-extrabold text-white tracking-tight">${escapeHtml(w.ticker)}</span>
+                <span class="text-[11px] text-slate-400">${escapeHtml(w.exchange || "")}</span>
+                ${trendBadge}
+              </div>
+              <p class="text-xs text-slate-300 mt-1 leading-relaxed">${escapeHtml(w.watch_reason || "")}</p>
+            </div>
+            <div class="text-right shrink-0">
+              <p class="text-sm font-bold text-white tabular-nums">${fmtVnd(w.actual_close)}</p>
+              <p class="text-[11px] text-amber-300 font-semibold tabular-nums">
+                BCTC ${fmtNum(w.fundamental_score, 0)}đ
+              </p>
+            </div>
+          </div>
+          <div class="grid grid-cols-4 gap-2 text-center bg-slate-950/60 rounded-xl p-2 text-[11px]">
+            <div>
+              <p class="text-slate-400">MA20</p>
+              <p class="font-semibold text-slate-200 tabular-nums">${fmtNum(w.ma20, 0)}</p>
+            </div>
+            <div>
+              <p class="text-slate-400">MA50</p>
+              <p class="font-semibold text-slate-200 tabular-nums">${fmtNum(w.ma50, 0)}</p>
+            </div>
+            <div>
+              <p class="text-slate-400">Cách MA20</p>
+              <p class="font-semibold text-amber-200 tabular-nums">${escapeHtml(dist20Label)}</p>
+            </div>
+            <div>
+              <p class="text-slate-400">RSI(14)</p>
+              <p class="font-semibold text-slate-200 tabular-nums">${fmtNum(w.rsi14, 1)}</p>
+            </div>
+          </div>
+        </article>`;
+    })
+    .join("");
 }
 
 // -------------------- Account NAV, P&L, Win Rate & Cash Ratio --------------------

@@ -26,6 +26,7 @@ from utils.config import (  # noqa: E402
     FORCE_SCAN,
     LOG_LEVEL,
     MAX_BUY_CANDIDATES,
+    MAX_WATCHLIST_CANDIDATES,
     MIN_FUNDAMENTAL_SCORE,
     vn_today_str,
 )
@@ -34,6 +35,7 @@ from utils.gemini_analyst import GeminiAnalyst  # noqa: E402
 from utils.indicators import (  # noqa: E402
     add_technical_indicators,
     detect_buy_signal,
+    detect_watchlist_candidate,
     evaluate_portfolio_position,
     is_valid_price_tick,
 )
@@ -203,16 +205,13 @@ def run_daily_scan(force: bool = FORCE_SCAN) -> None:
 
         # 3. Tier 2 — Technical Scan on adjusted prices
         raw_candidates: List[Dict[str, Any]] = []
+        raw_watchlist: List[Dict[str, Any]] = []
         tech_error_count = 0
         for ticker, fdoc in eligible_fundamentals.items():
             try:
                 df_adj = vn.get_ohlcv(ticker, days=160)
                 if df_adj is None or len(df_adj) < 55:
                     tech_error_count += 1
-                    continue
-
-                signal = detect_buy_signal(df_adj)
-                if not signal:
                     continue
 
                 exchange = fdoc.get("exchange", "HOSE")
@@ -239,6 +238,34 @@ def run_daily_scan(force: bool = FORCE_SCAN) -> None:
                     )
                 missing_bctc = bool(fdoc.get("missing_bctc", False))
                 fund_score = float(fdoc.get("score", 0.0))
+
+                signal = detect_buy_signal(df_adj)
+                if not signal:
+                    watch = detect_watchlist_candidate(df_adj)
+                    if watch:
+                        w_close_adj = float(watch["close_adj"])
+                        w_scale = (actual_close / w_close_adj) if w_close_adj > 0 else 1.0
+                        raw_watchlist.append({
+                            "ticker": ticker,
+                            "exchange": exchange,
+                            "sector_group": fdoc.get("sector_group", "non_financial"),
+                            "fundamental_score": fund_score,
+                            "actual_close": round(actual_close, 0),
+                            "ma20": round(float(watch["ma20"]) * w_scale, 0),
+                            "ma50": round(float(watch["ma50"]) * w_scale, 0),
+                            "rsi14": watch["rsi14"],
+                            "vol_ratio": watch["vol_ratio"],
+                            "trend_aligned": watch["trend_aligned"],
+                            "dist_to_ma20_pct": watch["dist_to_ma20_pct"],
+                            "dist_to_ma50_pct": watch["dist_to_ma50_pct"],
+                            "avg_value_20d_bn": round(avg_value_20d / 1e9, 1),
+                            "fit_account": fit_account,
+                            "missing_bctc": missing_bctc,
+                            "watch_reason": watch["watch_reason"],
+                        })
+                    time.sleep(0.15)
+                    continue
+
                 tech_score = float(signal["technical_score"])
                 combined_score = round(0.5 * fund_score + 0.5 * tech_score, 1)
 
@@ -316,7 +343,23 @@ def run_daily_scan(force: bool = FORCE_SCAN) -> None:
         # Sort: Priority A (Pullback) first, then highest combined_score
         raw_candidates.sort(key=lambda x: (x["signal_priority"], -x["combined_score"]))
         top_candidates = raw_candidates[:MAX_BUY_CANDIDATES]
-        logger.info("Tier 2 selected %d/%d buy candidates.", len(top_candidates), len(raw_candidates))
+        selected_tickers = {c["ticker"] for c in top_candidates}
+        raw_watchlist = [w for w in raw_watchlist if w["ticker"] not in selected_tickers]
+        raw_watchlist.sort(
+            key=lambda x: (
+                0 if x["trend_aligned"] else 1,
+                -x["fundamental_score"],
+                abs(x["dist_to_ma20_pct"]),
+            )
+        )
+        top_watchlist = raw_watchlist[:MAX_WATCHLIST_CANDIDATES]
+        logger.info(
+            "Tier 2 selected %d/%d buy candidates and %d/%d watchlist candidates.",
+            len(top_candidates),
+            len(raw_candidates),
+            len(top_watchlist),
+            len(raw_watchlist),
+        )
 
         # 4. Tier 4 — Multi-AI Debate Risk Critique (max 3 tickers/day, NO veto)
         for cand in top_candidates:
@@ -464,6 +507,7 @@ def run_daily_scan(force: bool = FORCE_SCAN) -> None:
             "vnindex": vnindex_info,
             "portfolio_alerts": portfolio_alerts,
             "buy_candidates": top_candidates,
+            "watchlist_candidates": top_watchlist,
             "scanned_fundamentals_count": len(eligible_fundamentals),
             "account_summary": {
                 "available_cash_vnd": available_cash_vnd,
