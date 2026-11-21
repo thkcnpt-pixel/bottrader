@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import logging
 import sys
-import time
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -208,6 +207,10 @@ def run_daily_scan(force: bool = FORCE_SCAN) -> None:
         raw_candidates: List[Dict[str, Any]] = []
         raw_watchlist: List[Dict[str, Any]] = []
         tech_error_count = 0
+        # Parallel warm-up of OHLCV cache (candidates + holdings share fetches)
+        vn.prefetch_ohlcv(
+            set(eligible_fundamentals.keys()) | {h["ticker"] for h in holdings}, days=160
+        )
         for ticker, fdoc in eligible_fundamentals.items():
             try:
                 df_adj = vn.get_ohlcv(ticker, days=160)
@@ -264,7 +267,6 @@ def run_daily_scan(force: bool = FORCE_SCAN) -> None:
                             "missing_bctc": missing_bctc,
                             "watch_reason": watch["watch_reason"],
                         })
-                    time.sleep(0.15)
                     continue
 
                 tech_score = float(signal["technical_score"])
@@ -336,7 +338,6 @@ def run_daily_scan(force: bool = FORCE_SCAN) -> None:
                         **quant_sizing,
                     },
                 })
-                time.sleep(0.15)
             except Exception as exc:  # noqa: BLE001
                 tech_error_count += 1
                 logger.warning("Technical scan error for %s: %s", ticker, exc)

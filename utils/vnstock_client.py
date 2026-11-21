@@ -214,6 +214,38 @@ class VnstockClient:
         days: int = 160,
         is_index: bool = False,
     ) -> Optional[pd.DataFrame]:
+        """Cached wrapper (per client instance, thread-safe) around the OHLCV fetch."""
+        cache = self.__dict__.setdefault("_ohlcv_cache", {})
+        key = (symbol.upper().strip(), int(days), bool(is_index))
+        if key in cache:
+            df = cache[key]
+            return df.copy() if df is not None else None
+        df = self._get_ohlcv_uncached(symbol, days=days, is_index=is_index)
+        if df is not None and len(df) > 0:
+            cache[key] = df
+        return df.copy() if df is not None else None
+
+    def prefetch_ohlcv(self, symbols, days: int = 160, max_workers: int = 4) -> None:
+        """Warm the OHLCV cache for many symbols concurrently (errors ignored)."""
+        from concurrent.futures import ThreadPoolExecutor
+
+        uniq = sorted({str(s).upper().strip() for s in symbols if s})
+
+        def _one(sym: str) -> None:
+            try:
+                self.get_ohlcv(sym, days=days)
+            except Exception:  # noqa: BLE001
+                pass
+
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            list(ex.map(_one, uniq))
+
+    def _get_ohlcv_uncached(
+        self,
+        symbol: str,
+        days: int = 160,
+        is_index: bool = False,
+    ) -> Optional[pd.DataFrame]:
         """Fetch daily OHLCV history (adjusted prices for indicators)."""
         end_dt = vn_now()
         start_dt = end_dt - timedelta(days=days)

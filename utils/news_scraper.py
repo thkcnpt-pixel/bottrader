@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
+import time
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote_plus
 
@@ -106,17 +108,33 @@ def _mentions_ticker(text: str, ticker: str) -> bool:
     return bool(re.search(pattern, text.upper()))
 
 
-def _fetch_rss_entries(url: str) -> List[Any]:
-    """Fetch and parse RSS feed safely with timeout."""
+_RSS_CACHE: Dict[str, tuple] = {}
+_RSS_CACHE_LOCK = threading.Lock()
+RSS_CACHE_TTL = 600  # seconds
+
+
+def _fetch_rss_entries(url: str, use_cache: bool = True) -> List[Any]:
+    """Fetch and parse RSS feed safely with timeout (cached per process, thread-safe)."""
+    now = time.time()
+    if use_cache:
+        with _RSS_CACHE_LOCK:
+            hit = _RSS_CACHE.get(url)
+            if hit and now - hit[0] < RSS_CACHE_TTL:
+                return hit[1]
     try:
         resp = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=REQUEST_TIMEOUT)
         if resp.status_code != 200:
-            return []
-        parsed = feedparser.parse(resp.content)
-        return list(parsed.entries or [])
+            entries: List[Any] = []
+        else:
+            parsed = feedparser.parse(resp.content)
+            entries = list(parsed.entries or [])
     except Exception as exc:  # noqa: BLE001
         logger.warning("RSS fetch failed for %s: %s", url, exc)
         return []
+    if use_cache and entries:
+        with _RSS_CACHE_LOCK:
+            _RSS_CACHE[url] = (now, entries)
+    return entries
 
 
 def collect_ticker_news(

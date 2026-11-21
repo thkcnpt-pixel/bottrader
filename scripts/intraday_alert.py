@@ -78,6 +78,7 @@ def run_intraday_alert(force: bool = FORCE_SCAN) -> None:
         valid_checked = 0
         error_count = 0
 
+        vn.prefetch_ohlcv([p_["ticker"] for p_ in holdings], days=120)
         for pos in holdings:
             ticker = pos["ticker"]
             exchange = pos.get("exchange", "HOSE")
