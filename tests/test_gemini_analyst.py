@@ -112,6 +112,29 @@ class TestGeminiAnalyst(unittest.TestCase):
         called_models = [call.kwargs["model"] for call in fake_models.generate_content.call_args_list]
         self.assertEqual(called_models, ["gemini-old-model", "gemini-3.5-flash-lite"])
 
+    def test_build_prompt_uses_live_account_balance_instead_of_500k(self):
+        from utils.gemini_analyst import _build_prompt
+
+        prompt = _build_prompt(
+            "HPG",
+            {
+                "actual_close_vnd": 25_000,
+                "account_context": {
+                    "available_cash_vnd": 1_250_000,
+                    "holding_stock_value_vnd": 750_000,
+                    "total_nav_vnd": 2_000_000,
+                    "max_affordable_shares_with_current_cash": 50,
+                    "current_holdings": ["FPT (6 CP ~750,000 đ)"],
+                },
+            },
+            {"articles": [], "events": []},
+        )
+        self.assertIn("1,250,000 VNĐ", prompt)
+        self.assertIn("2,000,000 VNĐ", prompt)
+        self.assertIn("50 CP", prompt)
+        self.assertNotIn("~500.000 VNĐ", prompt)
+
 
 if __name__ == "__main__":
     unittest.main()
+

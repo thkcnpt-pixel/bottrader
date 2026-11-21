@@ -5,7 +5,7 @@ Design rules:
   - Token-efficient single-call Structured Debate (~3,500 tokens/ticker = <1% Free Tier daily quota):
       * AI 1 (Phe Bò — Cơ bản & Động lực): ai_bull_thesis
       * AI 2 (Phe Gấu — Phản biện rủi ro): profit_quality, negative_news, dividend_trap, biggest_risk
-      * AI 3 (Trọng tài — Chốt phương án tốt nhất cho vốn 500k): ai_referee_verdict
+      * AI 3 (Trọng tài — Chốt phương án tốt nhất theo số dư tài khoản thực tế): ai_referee_verdict
   - Sleeps 5s between calls to respect Free Tier RPM limits.
   - Uses gemini-3.8-flash with automatic retry on transient 503/429 and fallback to gemini-3.5-flash-lite.
 """
@@ -54,19 +54,19 @@ class RiskCritiqueSchema(BaseModel):
         description="[AI 2 - Phe Gấu] Có tin xấu, kiện tụng, thanh tra hay lãnh đạo bán ra không? (2-3 câu bằng tiếng Việt)."
     )
     dividend_trap: str = Field(
-        description="[AI 2 - Phe Gấu] Có sắp chia cổ tức bằng cổ phiếu/phát hành thêm gây kẹt lô lẻ vốn 500k không? (2-3 câu bằng tiếng Việt)."
+        description="[AI 2 - Phe Gấu] Có sắp chia cổ tức bằng cổ phiếu/phát hành thêm gây chôn vốn hoặc kẹt cổ phiếu lẻ không? (2-3 câu bằng tiếng Việt)."
     )
     biggest_risk: str = Field(
         description="[AI 2 - Phe Gấu] Rủi ro lớn nhất nếu mua mã này trong 1-3 tháng tới là gì? (2-3 câu bằng tiếng Việt)."
     )
     ai_referee_verdict: str = Field(
-        description="[AI 3 - Trọng tài] Tổng kết phản biện giữa AI 1 và AI 2: chốt phương án hành động tốt nhất, điều kiện giải ngân hoặc hủy kèo cho nhà đầu tư vốn nhỏ 500k (2-3 câu thực chiến bằng tiếng Việt)."
+        description="[AI 3 - Trọng tài] Tổng kết phản biện giữa AI 1 và AI 2: chốt phương án hành động tốt nhất, điều kiện giải ngân hoặc đứng ngoài dựa trực tiếp trên số dư tiền mặt khả dụng và danh mục hiện có của tài khoản (2-3 câu thực chiến bằng tiếng Việt)."
     )
     suggested_buy_price: str = Field(
         description="[Nên đặt giá bao nhiêu] Vùng giá / mức giá đặt lệnh mua LO cụ thể (VNĐ) dựa trên giá đóng cửa, MA20, MA50, kèm mức cắt lỗ (SL) và chốt lời (TP) tham khảo (1-2 câu súc tích bằng tiếng Việt)."
     )
     suggested_buy_quantity: str = Field(
-        description="[Nên mua bao nhiêu] Khối lượng cổ phiếu (CP) và số tiền giải ngân gợi ý cho vốn mục tiêu ~500.000 VNĐ (lô lẻ 1-99 CP), nên mua 1 lần hay chia 2 đợt, hoặc ghi rõ nếu giá cổ phiếu vượt vốn 500k (1-2 câu súc tích bằng tiếng Việt)."
+        description="[Nên mua bao nhiêu] Khối lượng cổ phiếu (CP) và số tiền giải ngân gợi ý tính trực tiếp trên Số dư tiền mặt khả dụng hiện có của tài khoản (`available_cash_vnd`), nên mua 1 lần hay chia đợt, hoặc báo rõ nếu tiền mặt hiện có không đủ mua 1 CP (1-2 câu súc tích bằng tiếng Việt)."
     )
 
 
@@ -107,17 +107,49 @@ def _build_prompt(
         )
     events_text = "\n".join(event_lines) if event_lines else "Không có sự kiện/cổ tức gần đây."
 
+    acc_ctx = fundamental_summary.get("account_context") or {}
+    available_cash_vnd = int(float(acc_ctx.get("available_cash_vnd") or 0))
+    holding_stock_vnd = int(float(acc_ctx.get("holding_stock_value_vnd") or 0))
+    total_nav_vnd = int(float(acc_ctx.get("total_nav_vnd") or 0))
+    max_shares = int(float(acc_ctx.get("max_affordable_shares_with_current_cash") or 0))
+    holdings_list = acc_ctx.get("current_holdings") or []
+    holdings_str = ", ".join(holdings_list) if holdings_list else "Chưa nắm giữ mã nào"
+
+    if available_cash_vnd > 0 or total_nav_vnd > 0:
+        account_prompt_block = (
+            f"- **Thông tin tài khoản thực tế của nhà đầu tư:**\n"
+            f"  + Tiền mặt khả dụng (Sức mua hiện có): **{available_cash_vnd:,} VNĐ**\n"
+            f"  + Giá trị cổ phiếu đang nắm giữ: **{holding_stock_vnd:,} VNĐ** ({holdings_str})\n"
+            f"  + Tổng tài sản ròng (NAV): **{total_nav_vnd:,} VNĐ**\n"
+            f"  + Số lượng cổ phiếu {ticker} tối đa mua được bằng tiền mặt hiện có: **{max_shares} CP**"
+        )
+        qty_instruction = (
+            f"  + **Nên mua bao nhiêu (`suggested_buy_quantity`):** BẮT BUỘC tính trực tiếp trên **Số dư tiền mặt khả dụng hiện có là {available_cash_vnd:,} VNĐ** "
+            f"(tối đa mua được {max_shares} CP theo thị giá hiện tại). Đề xuất rõ số lượng CP nên mua, số tiền tương ứng, nên giải ngân 1 lần hay chia đợt dựa trên tỷ trọng tiền mặt/NAV hiện tại; "
+            f"nếu tiền mặt khả dụng ({available_cash_vnd:,} VNĐ) không đủ mua 1 CP thì ghi rõ là sức mua hiện tại chưa đủ và cần nạp thêm hoặc cơ cấu danh mục."
+        )
+    else:
+        account_prompt_block = (
+            "- **Thông tin tài khoản:** Nhà đầu tư chưa đồng bộ số dư tiền mặt (`available_cash_vnd = 0`). "
+            "Hãy gợi ý khối lượng mua theo tỷ trọng phần trăm sức mua thực tế của tài khoản và nhắc nhà đầu tư cập nhật số dư tiền mặt trong mục Danh mục."
+        )
+        qty_instruction = (
+            "  + **Nên mua bao nhiêu (`suggested_buy_quantity`):** Do tài khoản chưa cập nhật số dư tiền mặt khả dụng, "
+            "hãy tư vấn tỷ trọng giải ngân khuyến nghị (% sức mua hiện có) kèm đơn giá 1 CP hoặc 10 CP để nhà đầu tư tự nhân với số dư thực tế."
+        )
+
     bctc_json = json.dumps(fundamental_summary, ensure_ascii=False, indent=2)
 
-    return f"""Hãy mô phỏng **Hội đồng 3 chuyên gia AI phản biện chéo nhau** về mã cổ phiếu **{ticker}** (chứng khoán Việt Nam, phong cách Swing 1-3 tháng, nhà đầu tư vốn nhỏ ~500.000 VNĐ giao dịch lô lẻ):
+    return f"""Hãy mô phỏng **Hội đồng 3 chuyên gia AI phản biện chéo nhau** về mã cổ phiếu **{ticker}** (chứng khoán Việt Nam, phong cách Swing 1-3 tháng, hỗ trợ cả giao dịch lô lẻ và lô chẵn tùy theo số dư tài khoản thực tế của nhà đầu tư):
+{account_prompt_block}
 - **AI 1 (Phe Bò — Cơ bản & Tăng trưởng):** Nêu luận điểm thuyết phục nhất để mua mã {ticker}.
-- **AI 2 (Phe Gấu — Phản biện gay gắt):** Đập lại AI 1 bằng cách soi kỹ 4 rủi ro cốt lõi (chất lượng lợi nhuận, tin xấu/lãnh đạo bán, bẫy cổ tức/kẹt lô lẻ, rủi ro lớn nhất 1-3 tháng).
-- **AI 3 (Trọng tài — Chốt phương án tốt nhất):** Cân bằng lập luận của cả AI 1 và AI 2 để rút ra kết luận thực chiến nhất (điểm cần theo dõi, kịch bản quản trị rủi ro). Không tự ý loại mã.
-- **Kế hoạch đặt lệnh cụ thể (bắt buộc có số liệu từ dữ liệu giá & kỹ thuật bên dưới):**
+- **AI 2 (Phe Gấu — Phản biện gay gắt):** Đập lại AI 1 bằng cách soi kỹ 4 rủi ro cốt lõi (chất lượng lợi nhuận, tin xấu/lãnh đạo bán, bẫy cổ tức/phát hành thêm, rủi ro lớn nhất 1-3 tháng).
+- **AI 3 (Trọng tài — Chốt phương án tốt nhất theo tài khoản hiện có):** Cân bằng lập luận của cả AI 1 và AI 2, kết hợp với **số dư tiền mặt khả dụng và danh mục đang nắm giữ** của nhà đầu tư để rút ra kết luận thực chiến nhất. Không dùng mốc vốn 500k cố định. Không tự ý loại mã.
+- **Kế hoạch đặt lệnh cụ thể (bắt buộc bám sát dữ liệu giá & số dư tiền mặt khả dụng bên dưới):**
   + **Nên đặt giá bao nhiêu (`suggested_buy_price`):** Đề xuất vùng giá mua LO hợp lý (ưu tiên canh nhịp chỉnh gần MA20 / dưới giá đóng cửa nếu phù hợp), kèm mốc cắt lỗ (SL) và chốt lời (TP) tham khảo bằng VNĐ.
-  + **Nên mua bao nhiêu (`suggested_buy_quantity`):** Đề xuất số lượng cổ phiếu cụ thể (lô lẻ CP) và số tiền tương ứng cho vốn ~500.000 VNĐ (nên vào 1 lần hay chia 2 đợt, hoặc khuyến nghị hạ tỷ trọng/quan sát nếu rủi ro cao).
+{qty_instruction}
 
-=== 1. TÓM TẮT BCTC, GIÁ & KỸ THUẬT HIỆN TẠI ===
+=== 1. TÓM TẮT BCTC, GIÁ, KỸ THUẬT & TÀI KHOẢN HIỆN TẠI ===
 {bctc_json}
 
 === 2. LỊCH SỰ KIỆN & CỔ TỨC ===

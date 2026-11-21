@@ -127,8 +127,13 @@
 
       <!-- Buy Candidates -->
       <div class="space-y-3">
-        <div class="flex items-center justify-between">
-          <h3 class="text-sm font-bold text-white">Mã đạt điểm mua (Tầng 2 + Gemini)</h3>
+        <div class="flex items-center justify-between flex-wrap gap-2">
+          <div>
+            <h3 class="text-sm font-bold text-white">Mã đạt điểm mua (Tầng 2 + Gemini)</h3>
+            <p id="dashboard-cash-hint" class="text-[11px] text-sky-300 mt-0.5 tabular-nums">
+              💵 Sức mua tiền mặt hiện có: --
+            </p>
+          </div>
           <span id="candidates-count" class="text-xs text-slate-400">0 mã</span>
         </div>
         <div id="buy-candidates-list" class="space-y-3">
@@ -152,9 +157,9 @@
       <div class="glass-card rounded-2xl p-4 space-y-3.5">
         <div class="flex items-start justify-between gap-2">
           <div>
-            <p class="text-[11px] text-slate-400 uppercase tracking-wider">Tổng tài sản hiện có (NAV)</p>
+            <p class="text-[11px] text-slate-400 uppercase tracking-wider">Tổng tài sản hiện có (NAV = Tiền mặt + Cổ phiếu)</p>
             <p id="acc-nav" class="text-2xl font-extrabold text-white tabular-nums mt-0.5">0 đ</p>
-            <p id="acc-deposited-line" class="text-[11px] text-slate-400 mt-0.5 tabular-nums">Vốn đã nạp ròng: 0 đ</p>
+            <p id="acc-deposited-line" class="text-[11px] text-slate-400 mt-0.5 tabular-nums">Tổng vốn gốc đang đầu tư: 0 đ</p>
           </div>
           <div class="flex flex-col gap-1.5 shrink-0">
             <button id="btn-open-cashflow"
@@ -168,27 +173,41 @@
           </div>
         </div>
 
-        <!-- Stock vs Cash Breakdown + Bar -->
-        <div class="space-y-1.5">
-          <div class="flex items-center justify-between text-[11px]">
-            <span class="text-emerald-300 font-medium tabular-nums">Cổ phiếu: <strong id="acc-stock-val">0 đ</strong> (<span id="acc-stock-pct">0%</span>)</span>
-            <span class="text-sky-300 font-medium tabular-nums">Tiền mặt: <strong id="acc-cash-val">0 đ</strong> (<span id="acc-cash-pct">0%</span>)</span>
+        <!-- Explicit Cash vs Stock Cards -->
+        <div class="grid grid-cols-2 gap-2.5">
+          <div class="rounded-xl bg-sky-950/35 border border-sky-500/30 p-3">
+            <div class="flex items-center justify-between">
+              <p class="text-[11px] text-sky-300 font-semibold">💵 Tiền mặt hiện có</p>
+              <span id="acc-cash-pct" class="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-sky-500/20 text-sky-300 tabular-nums">100%</span>
+            </div>
+            <p id="acc-cash-val" class="text-base font-extrabold text-white tabular-nums mt-1">0 đ</p>
+            <p class="text-[10px] text-slate-400 mt-0.5">Sức mua khả dụng cho AI xét lệnh</p>
           </div>
-          <div class="w-full h-2 rounded-full bg-slate-800 overflow-hidden flex">
-            <div id="acc-stock-bar" class="h-full bg-emerald-500 transition-all" style="width: 0%"></div>
-            <div id="acc-cash-bar" class="h-full bg-sky-500 transition-all" style="width: 100%"></div>
+          <div class="rounded-xl bg-emerald-950/35 border border-emerald-500/30 p-3">
+            <div class="flex items-center justify-between">
+              <p class="text-[11px] text-emerald-300 font-semibold">📈 Cổ phiếu đang giữ</p>
+              <span id="acc-stock-pct" class="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 tabular-nums">0%</span>
+            </div>
+            <p id="acc-stock-val" class="text-base font-extrabold text-white tabular-nums mt-1">0 đ</p>
+            <p id="acc-stock-cost-line" class="text-[10px] text-slate-400 mt-0.5 tabular-nums">Giá vốn gốc: 0 đ</p>
           </div>
         </div>
 
+        <!-- Stock vs Cash Ratio Bar -->
+        <div class="w-full h-2 rounded-full bg-slate-800 overflow-hidden flex">
+          <div id="acc-stock-bar" class="h-full bg-emerald-500 transition-all" style="width: 0%"></div>
+          <div id="acc-cash-bar" class="h-full bg-sky-500 transition-all" style="width: 100%"></div>
+        </div>
+
         <!-- Monthly P&L & All-time P&L -->
-        <div class="grid grid-cols-2 gap-2.5 pt-1">
+        <div class="grid grid-cols-2 gap-2.5 pt-0.5">
           <div class="rounded-xl bg-slate-950/70 border border-slate-800 p-3">
             <p id="acc-month-label" class="text-[11px] text-slate-400">Lời/lỗ tháng này</p>
             <p id="acc-month-pnl" class="text-sm font-bold text-white tabular-nums mt-0.5">0 đ</p>
             <p id="acc-month-pnl-pct" class="text-[11px] text-slate-400 tabular-nums">0.00%</p>
           </div>
           <div class="rounded-xl bg-slate-950/70 border border-slate-800 p-3">
-            <p class="text-[11px] text-slate-400">Tổng lời/lỗ từ trước tới nay</p>
+            <p class="text-[11px] text-slate-400">Tổng lời/lỗ thực tế</p>
             <p id="acc-alltime-pnl" class="text-sm font-bold text-white tabular-nums mt-0.5">0 đ</p>
             <p id="acc-alltime-pnl-pct" class="text-[11px] text-slate-400 tabular-nums">0.00%</p>
           </div>
@@ -485,22 +504,29 @@
         <h3 class="text-base font-bold text-white">Đồng bộ số dư tiền mặt thực tế</h3>
         <button id="btn-close-sync-cash" class="text-slate-400 hover:text-white text-lg px-2">✕</button>
       </div>
-      <p class="text-xs text-slate-400">Nhập đúng số tiền mặt lưu hành (sức mua còn lại) và tổng vốn đã nạp thực tế trên app ZaloPay / DNSE của bạn để khớp 100%.</p>
+      <p class="text-xs text-slate-400">Nhập đúng <strong>Số dư tiền mặt khả dụng (Sức mua còn lại)</strong> trên app chứng khoán của bạn. AI và bảng Tài sản sẽ tự động lấy đúng số tiền này để tính khối lượng đặt lệnh.</p>
 
       <form id="sync-cash-form" class="space-y-3">
         <div>
-          <label class="block text-xs text-slate-300 mb-1">Tiền mặt lưu hành hiện có (VNĐ) *</label>
+          <label class="block text-xs text-slate-300 mb-1">Tiền mặt khả dụng hiện có (VNĐ) *</label>
           <input id="sync-cash-balance" type="number" required min="0" step="1"
                  class="w-full rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-white tabular-nums focus:outline-none focus:border-emerald-500" />
         </div>
         <div>
-          <label class="block text-xs text-slate-300 mb-1">Tổng vốn bạn đã nạp ròng (VNĐ) *</label>
+          <div class="flex items-center justify-between mb-1">
+            <label class="block text-xs text-slate-300">Tổng vốn gốc đã nạp ròng (VNĐ)</label>
+            <button type="button" id="btn-auto-calc-deposited"
+                    class="text-[11px] text-sky-400 hover:text-sky-300 font-semibold underline">
+              Tự khớp theo danh mục
+            </button>
+          </div>
           <input id="sync-total-deposited" type="number" required min="0" step="1"
                  class="w-full rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-white tabular-nums focus:outline-none focus:border-emerald-500" />
+          <p id="sync-cash-preview" class="text-[11px] text-slate-400 mt-1"></p>
         </div>
         <button type="submit"
                 class="w-full rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-semibold py-2.5 text-sm transition">
-          Lưu đồng bộ
+          Lưu đồng bộ tiền mặt
         </button>
       </form>
     </div>

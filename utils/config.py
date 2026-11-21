@@ -85,3 +85,5 @@ COL_DAILY_REPORTS = "daily_reports"
 COL_SETTINGS = "settings"
 COL_INTRADAY_STATE = "intraday_alerts_state"
 DOC_FCM_TOKENS = "fcm_tokens"
+DOC_ACCOUNT = "account"
+

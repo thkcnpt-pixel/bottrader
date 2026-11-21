@@ -13,6 +13,7 @@ from utils.config import (
     COL_INTRADAY_STATE,
     COL_PORTFOLIO,
     COL_SETTINGS,
+    DOC_ACCOUNT,
     DOC_FCM_TOKENS,
     DRY_RUN,
     vn_now,
@@ -95,6 +96,35 @@ class FirebaseClient:
             logger.info("[DRY_RUN] update_portfolio(%s): %s", ticker, updates)
             return
         self._db.collection(COL_PORTFOLIO).document(ticker).set(updates, merge=True)
+
+    # -------------------- Account Settings --------------------
+    def get_account_settings(self) -> Dict[str, Any]:
+        """Fetch user's live account settings (cash_balance, total_deposited, fee rates) from settings/account."""
+        defaults: Dict[str, Any] = {
+            "cash_balance": 0.0,
+            "total_deposited": 0.0,
+            "fee_buy_pct": 0.0,
+            "fee_sell_pct": 0.0,
+            "tax_sell_pct": 0.1,
+        }
+        if self.dry_run:
+            return defaults
+        try:
+            doc = self._db.collection(COL_SETTINGS).document(DOC_ACCOUNT).get()
+            if not doc.exists:
+                return defaults
+            data = doc.to_dict() or {}
+            return {
+                **defaults,
+                "cash_balance": float(data.get("cash_balance") or 0.0),
+                "total_deposited": float(data.get("total_deposited") or 0.0),
+                "fee_buy_pct": float(data.get("fee_buy_pct") or 0.0),
+                "fee_sell_pct": float(data.get("fee_sell_pct") or 0.0),
+                "tax_sell_pct": float(data.get("tax_sell_pct") if data.get("tax_sell_pct") is not None else 0.1),
+            }
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to fetch settings/account: %s", exc)
+            return defaults
 
     # -------------------- Daily Reports --------------------
     def save_daily_report(self, date_str: str, report: Dict[str, Any]) -> None:

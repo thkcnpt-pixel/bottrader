@@ -75,6 +75,29 @@ class TestFirebaseClientFCM(unittest.TestCase):
         self.assertEqual(sent, 0)
         client._messaging.send_each_for_multicast.assert_not_called()
 
+    def test_get_account_settings_reads_cash_and_deposited(self):
+        client = object.__new__(FirebaseClient)
+        client.dry_run = False
+        fake_doc = SimpleNamespace(
+            exists=True,
+            to_dict=lambda: {
+                "cash_balance": 850_000,
+                "total_deposited": 1_500_000,
+                "fee_buy_pct": 0.15,
+                "fee_sell_pct": 0.15,
+                "tax_sell_pct": 0.1,
+            },
+        )
+        fake_col = MagicMock()
+        fake_col.document.return_value.get.return_value = fake_doc
+        client._db = SimpleNamespace(collection=MagicMock(return_value=fake_col))
+
+        acc = client.get_account_settings()
+        self.assertEqual(acc["cash_balance"], 850_000.0)
+        self.assertEqual(acc["total_deposited"], 1_500_000.0)
+        self.assertEqual(acc["fee_buy_pct"], 0.15)
+
 
 if __name__ == "__main__":
     unittest.main()
+

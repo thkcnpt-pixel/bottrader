@@ -97,9 +97,10 @@ def run_daily_scan() -> None:
         vnindex_info["above_ma50"],
     )
 
-    # 2. Load cached fundamentals & holding portfolio
+    # 2. Load cached fundamentals, holding portfolio & live account settings
     fundamentals = fb.get_all_fundamentals()
     holdings = fb.get_holding_portfolio()
+    account_settings = fb.get_account_settings()
 
     eligible_fundamentals = {
         t: doc for t, doc in fundamentals.items()
@@ -115,6 +116,37 @@ def run_daily_scan() -> None:
     # Batch actual close prices for accurate display
     all_symbols = sorted(set(eligible_fundamentals.keys()).union({h["ticker"] for h in holdings}))
     actual_prices_map = vn.get_actual_prices_batch(all_symbols)
+
+    # Compute live account summary (Available Cash, Stock Market Value, Total NAV)
+    available_cash_vnd = round(max(0.0, float(account_settings.get("cash_balance") or 0.0)))
+    fee_buy_pct = max(0.0, float(account_settings.get("fee_buy_pct") or 0.0))
+    holding_market_value_vnd = 0.0
+    holding_summary_list: List[str] = []
+    for pos in holdings:
+        hticker = str(pos.get("ticker") or "")
+        hqty = int(float(pos.get("quantity") or 0))
+        hbuy = float(pos.get("buy_price") or 0.0)
+        hprice = float(
+            actual_prices_map.get(hticker, {}).get("actual_close")
+            or pos.get("latest_price")
+            or hbuy
+        )
+        hval = round(hprice * hqty)
+        holding_market_value_vnd += hval
+        if hticker and hqty > 0:
+            holding_summary_list.append(f"{hticker} ({hqty} CP ~{hval:,} đ)")
+
+    total_nav_vnd = round(available_cash_vnd + holding_market_value_vnd)
+    stock_ratio_pct = round((holding_market_value_vnd / total_nav_vnd) * 100.0, 1) if total_nav_vnd > 0 else 0.0
+    cash_ratio_pct = round(100.0 - stock_ratio_pct, 1) if total_nav_vnd > 0 else 100.0
+    logger.info(
+        "Live Account Context: Available Cash=%s VND | Stock Value=%s VND | Total NAV=%s VND (Cash %.1f%% / Stock %.1f%%)",
+        f"{available_cash_vnd:,}",
+        f"{round(holding_market_value_vnd):,}",
+        f"{total_nav_vnd:,}",
+        cash_ratio_pct,
+        stock_ratio_pct,
+    )
 
     # 3. Tier 2 — Technical Scan on adjusted prices
     raw_candidates: List[Dict[str, Any]] = []
@@ -134,18 +166,25 @@ def run_daily_scan() -> None:
             )
             recent_20 = df_adj.tail(20)
             avg_value_20d = float((recent_20["close"] * recent_20["volume"]).mean())
-            fit_500k = bool(
-                actual_close < FIT_500K_MAX_PRICE_VND
-                and avg_value_20d >= FIT_500K_MIN_AVG_VALUE_VND
-            )
+            unit_cost_with_fee = actual_close * (1.0 + fee_buy_pct / 100.0)
+            if available_cash_vnd > 0:
+                fit_account = bool(
+                    unit_cost_with_fee <= available_cash_vnd
+                    and avg_value_20d >= FIT_500K_MIN_AVG_VALUE_VND
+                )
+            else:
+                fit_account = bool(
+                    actual_close < FIT_500K_MAX_PRICE_VND
+                    and avg_value_20d >= FIT_500K_MIN_AVG_VALUE_VND
+                )
             missing_bctc = bool(fdoc.get("missing_bctc", False))
             fund_score = float(fdoc.get("score", 0.0))
             tech_score = float(signal["technical_score"])
             combined_score = round(0.5 * fund_score + 0.5 * tech_score, 1)
 
             tags = [f"[{signal['signal_type']}]"]
-            if fit_500k:
-                tags.append("[Hợp vốn 500k]")
+            if fit_account:
+                tags.append("[Đủ sức mua TK]" if available_cash_vnd > 0 else "[Hợp vốn nhỏ]")
             if missing_bctc:
                 tags.append("[Thiếu BCTC mới nhất]")
 
@@ -168,7 +207,8 @@ def run_daily_scan() -> None:
                 "rsi14": signal["rsi14"],
                 "vol_ratio": signal["vol_ratio"],
                 "avg_value_20d_bn": round(avg_value_20d / 1e9, 1),
-                "fit_500k": fit_500k,
+                "fit_500k": fit_account,
+                "fit_account": fit_account,
                 "missing_bctc": missing_bctc,
                 "tags": tags,
                 "reason": signal["reason"],
@@ -194,7 +234,8 @@ def run_daily_scan() -> None:
             vnstock_events=vn_news_events.get("events", []),
         )
         actual_close_val = float(cand.get("actual_close") or 0)
-        est_qty_500k = int(500_000 // actual_close_val) if actual_close_val > 0 else 0
+        unit_cost_val = actual_close_val * (1.0 + fee_buy_pct / 100.0)
+        max_shares_by_cash = int(available_cash_vnd // unit_cost_val) if (unit_cost_val > 0 and available_cash_vnd > 0) else 0
         critique = gemini.analyze_risk(
             ticker=ticker,
             fundamental_summary={
@@ -210,9 +251,17 @@ def run_daily_scan() -> None:
                 "ma50_vnd": cand["ma50"],
                 "rsi14": cand["rsi14"],
                 "vol_ratio": cand["vol_ratio"],
-                "fit_500k": cand["fit_500k"],
-                "reference_budget_vnd": 500_000,
-                "max_shares_for_500k": est_qty_500k,
+                "fit_account": cand["fit_account"],
+                "account_context": {
+                    "available_cash_vnd": available_cash_vnd,
+                    "holding_stock_value_vnd": round(holding_market_value_vnd),
+                    "total_nav_vnd": total_nav_vnd,
+                    "cash_ratio_pct": cash_ratio_pct,
+                    "stock_ratio_pct": stock_ratio_pct,
+                    "fee_buy_pct": fee_buy_pct,
+                    "current_holdings": holding_summary_list,
+                    "max_affordable_shares_with_current_cash": max_shares_by_cash,
+                },
                 "missing_bctc": cand["missing_bctc"],
                 "metrics": cand["metrics"],
             },
@@ -220,6 +269,11 @@ def run_daily_scan() -> None:
         )
         cand["gemini_analysis"] = critique
         cand["news_count"] = len(news_bundle.get("articles", []))
+        cand["account_snapshot"] = {
+            "available_cash_vnd": available_cash_vnd,
+            "total_nav_vnd": total_nav_vnd,
+            "max_affordable_shares": max_shares_by_cash,
+        }
 
     # 5. Tier 3 — Daily Portfolio Risk Management
     portfolio_alerts: List[Dict[str, Any]] = []
@@ -267,6 +321,13 @@ def run_daily_scan() -> None:
         "portfolio_alerts": portfolio_alerts,
         "buy_candidates": top_candidates,
         "scanned_fundamentals_count": len(eligible_fundamentals),
+        "account_summary": {
+            "available_cash_vnd": available_cash_vnd,
+            "holding_stock_value_vnd": round(holding_market_value_vnd),
+            "total_nav_vnd": total_nav_vnd,
+            "cash_ratio_pct": cash_ratio_pct,
+            "stock_ratio_pct": stock_ratio_pct,
+        },
     }
     fb.save_daily_report(today_str, report_payload)
 

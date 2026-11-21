@@ -270,6 +270,8 @@ function bindEvents() {
   $("sync-cash-modal").addEventListener("click", (e) => {
     if (e.target === $("sync-cash-modal")) $("sync-cash-modal").classList.add("hidden");
   });
+  $("sync-cash-balance")?.addEventListener("input", updateSyncCashPreview);
+  $("btn-auto-calc-deposited")?.addEventListener("click", handleAutoCalcDeposited);
   $("sync-cash-form").addEventListener("submit", handleSaveSyncCash);
 
   // Sell / Take-Profit Modal
@@ -293,6 +295,9 @@ async function refreshAllData() {
   await Promise.all([loadDailyReports(), loadAccount(), loadPortfolio(), loadFcmSettings()]);
   renderAccountSummary();
   renderPortfolio();
+  if (latestReport) {
+    renderDailyReport(latestReport);
+  }
 }
 
 async function loadAccount() {
@@ -418,6 +423,20 @@ function renderDailyReport(report) {
   $("candidates-count").textContent = `${candidates.length} mã`;
   const listEl = $("buy-candidates-list");
 
+  const liveCash = Math.max(0, Math.round(Number(accountState.cash_balance || 0)));
+  const { buyFee } = getFeeRates();
+  const cashHintEl = $("dashboard-cash-hint");
+  if (cashHintEl) {
+    cashHintEl.innerHTML =
+      liveCash > 0
+        ? `💵 Sức mua tiền mặt hiện có của bạn: <strong class="text-white">${fmtVnd(liveCash)}</strong>`
+        : `💵 Bạn chưa nhập Tiền mặt hiện có (<button type="button" data-action="jump-sync-cash" class="underline text-emerald-300 font-semibold">Nhập số dư ngay</button> để AI tính đúng khối lượng mua)`;
+    cashHintEl.querySelector('[data-action="jump-sync-cash"]')?.addEventListener("click", () => {
+      document.querySelector('.tab-btn[data-tab="portfolio"]')?.click();
+      openSyncCashModal();
+    });
+  }
+
   if (candidates.length === 0) {
     listEl.innerHTML = `
       <div class="glass-card rounded-2xl p-6 text-center text-xs text-slate-400">
@@ -429,16 +448,55 @@ function renderDailyReport(report) {
   listEl.innerHTML = candidates
     .map((c) => {
       const g = c.gemini_analysis || {};
+      const actualClose = Number(c.actual_close || 0);
+      const unitCostWithFee = actualClose * (1 + buyFee);
+      const liveMaxShares = unitCostWithFee > 0 && liveCash > 0 ? Math.floor(liveCash / unitCostWithFee) : 0;
+      const liveMaxCost = Math.round(liveMaxShares * unitCostWithFee);
+
       const signalBadge =
         c.signal_type === "Pullback"
           ? `<span class="px-2 py-0.5 rounded-md text-[11px] font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">[Pullback]</span>`
           : `<span class="px-2 py-0.5 rounded-md text-[11px] font-semibold bg-sky-500/20 text-sky-300 border border-sky-500/40">[Breakout]</span>`;
-      const fitBadge = c.fit_500k
-        ? `<span class="px-2 py-0.5 rounded-md text-[11px] font-semibold bg-violet-500/20 text-violet-300 border border-violet-500/40">[Hợp vốn 500k]</span>`
-        : "";
+
+      let fitBadge = "";
+      if (liveCash > 0 && actualClose > 0) {
+        fitBadge =
+          liveMaxShares > 0
+            ? `<span class="px-2 py-0.5 rounded-md text-[11px] font-semibold bg-violet-500/20 text-violet-300 border border-violet-500/40">[Mua tối đa ${liveMaxShares} CP]</span>`
+            : `<span class="px-2 py-0.5 rounded-md text-[11px] font-semibold bg-rose-500/20 text-rose-300 border border-rose-500/40">[Vượt tiền mặt hiện có]</span>`;
+      } else if (c.fit_account ?? c.fit_500k) {
+        fitBadge = `<span class="px-2 py-0.5 rounded-md text-[11px] font-semibold bg-violet-500/20 text-violet-300 border border-violet-500/40">[Đủ thanh khoản]</span>`;
+      }
+
       const missBadge = c.missing_bctc
         ? `<span class="px-2 py-0.5 rounded-md text-[11px] font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/40">[Thiếu BCTC mới nhất]</span>`
         : "";
+
+      const liveCashSubnote =
+        liveCash > 0 && actualClose > 0
+          ? liveMaxShares > 0
+            ? `<p class="text-[11px] text-emerald-300 mt-1.5 pt-1.5 border-t border-violet-500/25 tabular-nums">
+                 📌 <strong>Theo tiền mặt hiện có (${fmtVnd(liveCash)}):</strong> Mua tối đa <strong>${liveMaxShares} CP</strong> (~${fmtVnd(liveMaxCost)}), hoặc chia 2 đợt mỗi đợt <strong>${Math.max(1, Math.floor(liveMaxShares / 2))} CP</strong>.
+               </p>`
+            : `<p class="text-[11px] text-rose-300 mt-1.5 pt-1.5 border-t border-violet-500/25 tabular-nums">
+                 ⚠️ <strong>Theo tiền mặt hiện có (${fmtVnd(liveCash)}):</strong> Chưa đủ mua 1 CP (cần tối thiểu ${fmtVnd(unitCostWithFee)}).
+               </p>`
+          : "";
+
+      // If old cached Gemini text still mentions "500k" or "500.000", replace or supplement with live account calculation
+      let quantityAdviceText = g.suggested_buy_quantity || "";
+      const hasLegacy500k = /500k|500\.000|500,000/i.test(quantityAdviceText);
+      if ((!quantityAdviceText || hasLegacy500k) && liveCash > 0 && actualClose > 0) {
+        quantityAdviceText =
+          liveMaxShares > 0
+            ? `Với số dư tiền mặt hiện có ${fmtVnd(liveCash)}, bạn mua được tối đa ${liveMaxShares} CP (~${fmtVnd(liveMaxCost)}). Khuyến nghị giải ngân thăm dò ${Math.max(1, Math.floor(liveMaxShares / 2))} CP trước, phần còn lại chờ xác nhận xu hướng.`
+            : `Thị giá 1 CP (${fmtVnd(actualClose)}) cao hơn số dư tiền mặt hiện có của bạn (${fmtVnd(liveCash)}) — chưa đủ sức mua nếu không nạp thêm hoặc chốt mã khác.`;
+      } else if (!quantityAdviceText) {
+        quantityAdviceText =
+          actualClose > 0
+            ? `Đơn giá ~${fmtVnd(actualClose)}/CP (10 CP ~ ${fmtVnd(actualClose * 10)}). Hãy cập nhật Tiền mặt hiện có ở Tab Danh mục để hệ thống tính chính xác số CP cho tài khoản của bạn.`
+            : "Chưa có dữ liệu.";
+      }
 
       return `
         <article class="glass-card rounded-2xl p-4 space-y-3">
@@ -505,7 +563,7 @@ function renderDailyReport(report) {
                   <p class="text-slate-300 mt-0.5 leading-relaxed">${escapeHtml(g.negative_news || "Chưa có dữ liệu.")}</p>
                 </div>
                 <div>
-                  <p class="font-medium text-amber-200">3. Bẫy cổ tức cổ phiếu / Phát hành thêm (Lô lẻ)</p>
+                  <p class="font-medium text-amber-200">3. Bẫy cổ tức cổ phiếu / Phát hành thêm</p>
                   <p class="text-slate-300 mt-0.5 leading-relaxed">${escapeHtml(g.dividend_trap || "Chưa có dữ liệu.")}</p>
                 </div>
                 <div>
@@ -516,7 +574,7 @@ function renderDailyReport(report) {
               ${
                 g.ai_referee_verdict
                   ? `<div class="rounded-lg bg-sky-950/40 border border-sky-500/30 p-2.5">
-                      <p class="font-semibold text-sky-300">⚖️ AI 3 (Trọng tài — Chốt phương án cho vốn 500k)</p>
+                      <p class="font-semibold text-sky-300">⚖️ AI 3 (Trọng tài — Chốt phương án theo tài khoản của bạn)</p>
                       <p class="text-slate-200 mt-0.5 leading-relaxed">${escapeHtml(g.ai_referee_verdict)}</p>
                     </div>`
                   : ""
@@ -532,15 +590,9 @@ function renderDailyReport(report) {
                   )}</p>
                 </div>
                 <div class="rounded-lg bg-violet-950/35 border border-violet-500/35 p-2.5">
-                  <p class="font-semibold text-violet-300">💰 Nên mua bao nhiêu</p>
-                  <p class="text-slate-200 mt-0.5 leading-relaxed">${escapeHtml(
-                    g.suggested_buy_quantity ||
-                      (c.actual_close > 0
-                        ? Math.floor(500000 / c.actual_close) > 0
-                          ? `Với vốn 500k mua tối đa ~${Math.floor(500000 / c.actual_close)} CP lô lẻ (~${fmtVnd(Math.floor(500000 / c.actual_close) * c.actual_close)}).`
-                          : `Thị giá (${fmtVnd(c.actual_close)}) cao hơn vốn 500k/lệnh — cân nhắc bổ sung vốn hoặc chọn mã khác.`
-                        : "Chưa có dữ liệu.")
-                  )}</p>
+                  <p class="font-semibold text-violet-300">💰 Nên mua bao nhiêu (Theo tài khoản hiện có)</p>
+                  <p class="text-slate-200 mt-0.5 leading-relaxed">${escapeHtml(quantityAdviceText)}</p>
+                  ${!hasLegacy500k ? liveCashSubnote : ""}
                 </div>
               </div>
             </div>
@@ -567,16 +619,16 @@ function calcBreakEvenPrice(buyPrice) {
 
 function calcNetHoldingPnl(buyPrice, latestPrice, qty) {
   const { buyFee, sellFee, sellTax } = getFeeRates();
-  const totalCost = buyPrice * qty * (1 + buyFee);
-  const netProceeds = latestPrice * qty * (1 - sellFee - sellTax);
+  const totalCost = Math.round(buyPrice * qty * (1 + buyFee));
+  const netProceeds = Math.round(latestPrice * qty * (1 - sellFee - sellTax));
   const netPnl = netProceeds - totalCost;
   const netPct = totalCost > 0 ? (netPnl / totalCost) * 100 : 0;
   return { totalCost, netProceeds, netPnl, netPct };
 }
 
-function renderAccountSummary() {
+function getPortfolioSummaryMetrics() {
   const holdings = portfolioItems.filter((p) => (p.status || "holding") === "holding");
-  let stockValue = 0;
+  let stockMarketValue = 0;
   let totalHoldingCost = 0;
   let unrealizedNetPnl = 0;
 
@@ -584,60 +636,97 @@ function renderAccountSummary() {
     const buyPrice = Number(p.buy_price || 0);
     const qty = Number(p.quantity || 0);
     const latestPrice = Number(p.latest_price || buyPrice);
-    stockValue += latestPrice * qty;
+    stockMarketValue += Math.round(latestPrice * qty);
     const { totalCost, netPnl } = calcNetHoldingPnl(buyPrice, latestPrice, qty);
     totalHoldingCost += totalCost;
     unrealizedNetPnl += netPnl;
   }
 
-  const cashBalance = Number(accountState.cash_balance || 0);
-  const totalDeposited = Number(accountState.total_deposited || 0);
-  const nav = cashBalance + stockValue;
-
-  const stockPct = nav > 0 ? Math.round((stockValue / nav) * 100) : 0;
-  const cashPct = nav > 0 ? 100 - stockPct : 100;
-
-  // Realized trades stats
   const trades = Array.isArray(accountState.realized_trades) ? accountState.realized_trades : [];
   const monthKey = currentMonthKey();
-  const realizedAllTime = trades.reduce((acc, t) => acc + Number(t.net_pnl || 0), 0);
+  const realizedAllTime = trades.reduce((acc, t) => acc + Math.round(Number(t.net_pnl || 0)), 0);
+  const realizedCostAllTime = trades.reduce(
+    (acc, t) => acc + Math.round(Number(t.buy_price || 0) * Number(t.quantity || 0)),
+    0
+  );
   const realizedThisMonth = trades
     .filter((t) => String(t.sell_date || "").startsWith(monthKey))
-    .reduce((acc, t) => acc + Number(t.net_pnl || 0), 0);
+    .reduce((acc, t) => acc + Math.round(Number(t.net_pnl || 0)), 0);
+  const realizedCostThisMonth = trades
+    .filter((t) => String(t.sell_date || "").startsWith(monthKey))
+    .reduce((acc, t) => acc + Math.round(Number(t.buy_price || 0) * Number(t.quantity || 0)), 0);
 
-  // All-time P&L: prefer NAV - totalDeposited when user tracks deposits; else realized + unrealized
-  const allTimePnl = totalDeposited > 0 ? nav - totalDeposited : realizedAllTime + unrealizedNetPnl;
-  const allTimeBase = totalDeposited > 0 ? totalDeposited : totalHoldingCost;
-  const allTimePct = allTimeBase > 0 ? (allTimePnl / allTimeBase) * 100 : 0;
+  return {
+    holdings,
+    trades,
+    monthKey,
+    stockMarketValue,
+    totalHoldingCost,
+    unrealizedNetPnl,
+    realizedAllTime,
+    realizedCostAllTime,
+    realizedThisMonth,
+    realizedCostThisMonth,
+  };
+}
 
-  // Monthly P&L: use monthly_snapshots[YYYY-MM] if recorded, adjusted for deposits/withdrawals this month
-  const snapshots = accountState.monthly_snapshots || {};
-  const cashFlows = Array.isArray(accountState.cash_flows) ? accountState.cash_flows : [];
-  const netCashFlowThisMonth = cashFlows
-    .filter((cf) => String(cf.date || "").startsWith(monthKey))
-    .reduce((acc, cf) => acc + (cf.type === "withdraw" ? -Number(cf.amount || 0) : Number(cf.amount || 0)), 0);
+function renderAccountSummary() {
+  const {
+    monthKey,
+    trades,
+    stockMarketValue,
+    totalHoldingCost,
+    unrealizedNetPnl,
+    realizedAllTime,
+    realizedCostAllTime,
+    realizedThisMonth,
+    realizedCostThisMonth,
+  } = getPortfolioSummaryMetrics();
 
-  let monthPnl = realizedThisMonth + unrealizedNetPnl;
-  let monthBase = allTimeBase;
-  if (typeof snapshots[monthKey] === "number" && snapshots[monthKey] > 0) {
-    monthPnl = nav - snapshots[monthKey] - netCashFlowThisMonth;
-    monthBase = snapshots[monthKey] + Math.max(0, netCashFlowThisMonth);
-  } else if (nav > 0 && db) {
-    // Initialize month start snapshot silently once NAV > 0
-    const initNav = Math.max(0, nav - netCashFlowThisMonth);
-    if (initNav > 0) {
-      persistAccount({
-        monthly_snapshots: { ...snapshots, [monthKey]: initNav },
-      }).catch(() => {});
-    }
-  }
-  const monthPct = monthBase > 0 ? (monthPnl / monthBase) * 100 : 0;
+  const cashBalance = Math.max(0, Math.round(Number(accountState.cash_balance || 0)));
+  const nav = cashBalance + stockMarketValue;
 
-  // Render NAV card
+  // Implied active original capital = Current Cash + Cost Basis of Holding Stocks - Realized Net Profit
+  const impliedBaseCapital = Math.max(0, cashBalance + totalHoldingCost - realizedAllTime);
+  const recordedDeposited = Math.max(0, Math.round(Number(accountState.total_deposited || 0)));
+  const effectiveCapitalBase = recordedDeposited > 0 ? recordedDeposited : impliedBaseCapital;
+
+  const stockPct = nav > 0 ? Math.round((stockMarketValue / nav) * 100) : 0;
+  const cashPct = nav > 0 ? 100 - stockPct : 100;
+
+  // Bottom-up transaction-based P&L (immune to cash deposit/sync mismatches)
+  const allTimePnl = realizedAllTime + unrealizedNetPnl;
+  const allTimeDenominator =
+    effectiveCapitalBase > 0
+      ? effectiveCapitalBase
+      : totalHoldingCost > 0
+      ? totalHoldingCost
+      : realizedCostAllTime;
+  const allTimePct = allTimeDenominator > 0 ? (allTimePnl / allTimeDenominator) * 100 : 0;
+
+  const monthPnl = realizedThisMonth + unrealizedNetPnl;
+  const monthDenominator =
+    effectiveCapitalBase > 0
+      ? effectiveCapitalBase
+      : totalHoldingCost + realizedCostThisMonth;
+  const monthPct = monthDenominator > 0 ? (monthPnl / monthDenominator) * 100 : 0;
+
+  // Render NAV & Cash/Stock cards
   $("acc-nav").textContent = fmtVnd(nav);
-  $("acc-deposited-line").textContent = `Vốn đã nạp ròng: ${fmtVnd(totalDeposited)}`;
-  $("acc-stock-val").textContent = fmtVnd(stockValue);
+  if (recordedDeposited > 0 && Math.abs(recordedDeposited - impliedBaseCapital) > 1000) {
+    $("acc-deposited-line").textContent = `Vốn gốc: ${fmtVnd(impliedBaseCapital)} (Đã ghi nạp: ${fmtVnd(recordedDeposited)})`;
+  } else {
+    $("acc-deposited-line").textContent = `Tổng vốn gốc đang đầu tư: ${fmtVnd(effectiveCapitalBase)}`;
+  }
+
   $("acc-cash-val").textContent = fmtVnd(cashBalance);
+  $("acc-stock-val").textContent = fmtVnd(stockMarketValue);
+  if ($("acc-stock-cost-line")) {
+    $("acc-stock-cost-line").textContent =
+      totalHoldingCost > 0
+        ? `Vốn mua: ${fmtVnd(totalHoldingCost)} (${unrealizedNetPnl >= 0 ? "+" : ""}${fmtVnd(unrealizedNetPnl)})`
+        : "Chưa giữ cổ phiếu nào";
+  }
   $("acc-stock-pct").textContent = `${stockPct}%`;
   $("acc-cash-pct").textContent = `${cashPct}%`;
   $("acc-stock-bar").style.width = `${stockPct}%`;
@@ -648,7 +737,7 @@ function renderAccountSummary() {
   $("acc-month-pnl").className = `text-sm font-bold tabular-nums mt-0.5 ${
     monthPnl >= 0 ? "text-emerald-400" : "text-rose-400"
   }`;
-  $("acc-month-pnl-pct").textContent = `${monthPct >= 0 ? "+" : ""}${fmtNum(monthPct, 2)}%`;
+  $("acc-month-pnl-pct").textContent = `${monthPct >= 0 ? "+" : ""}${fmtNum(monthPct, 2)}% (Chốt tháng: ${fmtSignedVnd(realizedThisMonth)})`;
   $("acc-month-pnl-pct").className = `text-[11px] tabular-nums ${
     monthPnl >= 0 ? "text-emerald-300/80" : "text-rose-300/80"
   }`;
@@ -657,12 +746,12 @@ function renderAccountSummary() {
   $("acc-alltime-pnl").className = `text-sm font-bold tabular-nums mt-0.5 ${
     allTimePnl >= 0 ? "text-emerald-400" : "text-rose-400"
   }`;
-  $("acc-alltime-pnl-pct").textContent = `${allTimePct >= 0 ? "+" : ""}${fmtNum(allTimePct, 2)}% (Chốt: ${fmtSignedVnd(realizedAllTime)})`;
+  $("acc-alltime-pnl-pct").textContent = `${allTimePct >= 0 ? "+" : ""}${fmtNum(allTimePct, 2)}% (Đã chốt: ${fmtSignedVnd(realizedAllTime)} • Đang giữ: ${fmtSignedVnd(unrealizedNetPnl)})`;
   $("acc-alltime-pnl-pct").className = `text-[11px] tabular-nums ${
     allTimePnl >= 0 ? "text-emerald-300/80" : "text-rose-300/80"
   }`;
 
-  // Idea 4: Cash ratio warning when VN-Index < MA50 & Stock > 60%
+  // Cash ratio warning when VN-Index < MA50 & Stock > 60%
   const vniWarning = Boolean(latestReport?.vnindex?.warning_flag);
   const warnBox = $("cash-ratio-warning");
   if (vniWarning && nav > 0 && stockPct > 60) {
@@ -673,7 +762,6 @@ function renderAccountSummary() {
     warnBox.classList.add("hidden");
   }
 
-  // Idea 3: Win Rate & Avg Win / Avg Loss
   renderPerformanceStats(trades);
 }
 
@@ -852,11 +940,24 @@ function renderPortfolio() {
         openSellModal(item);
       } else if (action === "delete") {
         if (confirm(`Xóa mã ${ticker} khỏi danh mục Firestore?`)) {
+          const isHolding = (item.status || "holding") === "holding";
+          const { buyFee } = getFeeRates();
+          const itemCost = Math.round(Number(item.buy_price || 0) * Number(item.quantity || 0) * (1 + buyFee));
           await deleteDoc(doc(db, "portfolio", ticker));
+          if (isHolding && itemCost > 0) {
+            const refund = confirm(
+              `Bạn có muốn hoàn lại tiền gốc mua ${ticker} (${fmtVnd(itemCost)}) vào Tiền mặt hiện có không?`
+            );
+            if (refund) {
+              const newCash = Math.round(Number(accountState.cash_balance || 0) + itemCost);
+              await persistAccount({ cash_balance: newCash });
+            }
+          }
           showToast(`Đã xóa ${ticker}.`);
           await loadPortfolio();
           renderAccountSummary();
           renderPortfolio();
+          if (latestReport) renderDailyReport(latestReport);
         }
       }
     });
@@ -875,8 +976,14 @@ function openPortfolioModal(item) {
   $("pf-status").value = item?.status || "holding";
   $("pf-sold-half").checked = Boolean(item?.sold_half);
   $("pf-notes").value = item?.notes || "";
-  $("pf-deduct-cash-wrap").classList.toggle("hidden", isEdit);
-  $("pf-deduct-cash").checked = !isEdit;
+  $("pf-deduct-cash-wrap").classList.remove("hidden");
+  const deductLabel = document.querySelector('label[for="pf-deduct-cash"]');
+  if (deductLabel) {
+    deductLabel.textContent = isEdit
+      ? "Tự động bù/trừ phần chênh lệch giá vốn vào Tiền mặt hiện có"
+      : "Tự động trừ tiền mặt hiện có (nếu thiếu tự tính là nạp thêm vốn)";
+  }
+  $("pf-deduct-cash").checked = true;
   $("pf-form-error").classList.add("hidden");
   $("pf-form-error").textContent = "";
   $("portfolio-modal").classList.remove("hidden");
@@ -917,14 +1024,37 @@ async function handleSavePortfolio(e) {
   };
 
   try {
+    const { buyFee } = getFeeRates();
+    const newCost = payload.status === "holding" ? Math.round(buyPrice * qty * (1 + buyFee)) : 0;
+    const oldCost =
+      existing && (existing.status || "holding") === "holding"
+        ? Math.round(Number(existing.buy_price || 0) * Number(existing.quantity || 0) * (1 + buyFee))
+        : 0;
+
     await setDoc(doc(db, "portfolio", ticker), payload, { merge: true });
 
-    // Auto-deduct cash for new Buy orders if checked
-    if (!isEdit && $("pf-deduct-cash").checked && payload.status === "holding") {
-      const { buyFee } = getFeeRates();
-      const buyCost = Math.round(buyPrice * qty * (1 + buyFee));
-      const newCash = Math.max(0, Number(accountState.cash_balance || 0) - buyCost);
-      await persistAccount({ cash_balance: newCash });
+    // Reconcile cash balance and net deposited capital accurately
+    if ($("pf-deduct-cash").checked) {
+      const costDelta = isEdit ? newCost - oldCost : newCost;
+      if (costDelta !== 0) {
+        const currentCash = Math.round(Number(accountState.cash_balance || 0));
+        const currentDeposited = Math.round(Number(accountState.total_deposited || 0));
+        if (costDelta > 0) {
+          if (currentCash >= costDelta) {
+            await persistAccount({ cash_balance: currentCash - costDelta });
+          } else {
+            // Buying more than available cash -> shortfall comes from newly added external capital
+            const shortfall = costDelta - currentCash;
+            await persistAccount({
+              cash_balance: 0,
+              total_deposited: currentDeposited > 0 ? currentDeposited + shortfall : 0,
+            });
+          }
+        } else {
+          // Cost reduced (e.g. edited smaller qty or lower price) -> refund difference to cash
+          await persistAccount({ cash_balance: currentCash + Math.abs(costDelta) });
+        }
+      }
     }
 
     closePortfolioModal();
@@ -932,6 +1062,7 @@ async function handleSavePortfolio(e) {
     await loadPortfolio();
     renderAccountSummary();
     renderPortfolio();
+    if (latestReport) renderDailyReport(latestReport);
   } catch (err) {
     errEl.textContent = `Lỗi lưu Firestore: ${err.code ? `[${err.code}] ` : ""}${err.message || err}`;
     errEl.classList.remove("hidden");
@@ -982,14 +1113,20 @@ function renderCashflowHistory() {
 async function handleSaveCashflow(e) {
   e.preventDefault();
   const type = $("cf-type").value;
-  const amount = Number($("cf-amount").value);
+  const amount = Math.round(Number($("cf-amount").value));
   const date = $("cf-date").value;
   const note = $("cf-note").value.trim();
   if (!amount || amount <= 0) return;
 
+  const { totalHoldingCost, realizedAllTime } = getPortfolioSummaryMetrics();
+  const currentCash = Math.round(Number(accountState.cash_balance || 0));
+  const currentDeposited = Math.round(Number(accountState.total_deposited || 0));
+  const baseDeposited =
+    currentDeposited > 0 ? currentDeposited : Math.max(0, currentCash + totalHoldingCost - realizedAllTime);
+
   const delta = type === "withdraw" ? -amount : amount;
-  const newCash = Math.max(0, Number(accountState.cash_balance || 0) + delta);
-  const newDeposited = Math.max(0, Number(accountState.total_deposited || 0) + delta);
+  const newCash = Math.max(0, currentCash + delta);
+  const newDeposited = Math.max(0, baseDeposited + delta);
   const newFlows = [
     ...(accountState.cash_flows || []),
     { id: Date.now().toString(), type, amount, date, note },
@@ -1004,25 +1141,56 @@ async function handleSaveCashflow(e) {
   $("cashflow-modal").classList.add("hidden");
   showToast(type === "deposit" ? `Đã nạp +${fmtVnd(amount)}` : `Đã rút -${fmtVnd(amount)}`);
   renderAccountSummary();
+  if (latestReport) renderDailyReport(latestReport);
+}
+
+function calcImpliedDepositedForCash(cashAmount) {
+  const { totalHoldingCost, realizedAllTime } = getPortfolioSummaryMetrics();
+  return Math.max(0, Math.round(Number(cashAmount || 0)) + totalHoldingCost - realizedAllTime);
+}
+
+function updateSyncCashPreview() {
+  const cashInput = Math.max(0, Math.round(Number($("sync-cash-balance")?.value || 0)));
+  const { stockMarketValue, totalHoldingCost, realizedAllTime } = getPortfolioSummaryMetrics();
+  const impliedDeposited = calcImpliedDepositedForCash(cashInput);
+  const previewNav = cashInput + stockMarketValue;
+  const previewEl = $("sync-cash-preview");
+  if (previewEl) {
+    previewEl.textContent = `Gợi ý khớp tự động: Tiền mặt (${fmtVnd(cashInput)}) + Giá vốn CP đang giữ (${fmtVnd(totalHoldingCost)}) - Lãi đã chốt (${fmtSignedVnd(realizedAllTime)}) = Vốn gốc ${fmtVnd(impliedDeposited)} • Tổng NAV sẽ hiển thị: ${fmtVnd(previewNav)}.`;
+  }
+}
+
+function handleAutoCalcDeposited() {
+  const cashInput = Math.max(0, Math.round(Number($("sync-cash-balance")?.value || 0)));
+  $("sync-total-deposited").value = calcImpliedDepositedForCash(cashInput);
+  updateSyncCashPreview();
 }
 
 function openSyncCashModal() {
-  $("sync-cash-balance").value = Math.round(Number(accountState.cash_balance || 0));
-  $("sync-total-deposited").value = Math.round(Number(accountState.total_deposited || 0));
+  const currentCash = Math.round(Number(accountState.cash_balance || 0));
+  const currentDeposited = Math.round(Number(accountState.total_deposited || 0));
+  $("sync-cash-balance").value = currentCash;
+  $("sync-total-deposited").value =
+    currentDeposited > 0 ? currentDeposited : calcImpliedDepositedForCash(currentCash);
+  updateSyncCashPreview();
   $("sync-cash-modal").classList.remove("hidden");
 }
 
 async function handleSaveSyncCash(e) {
   e.preventDefault();
-  const cashBalance = Number($("sync-cash-balance").value);
-  const totalDeposited = Number($("sync-total-deposited").value);
+  const cashBalance = Math.max(0, Math.round(Number($("sync-cash-balance").value || 0)));
+  let totalDeposited = Math.max(0, Math.round(Number($("sync-total-deposited").value || 0)));
+  if (totalDeposited === 0 && cashBalance > 0) {
+    totalDeposited = calcImpliedDepositedForCash(cashBalance);
+  }
   await persistAccount({
-    cash_balance: Math.max(0, cashBalance),
-    total_deposited: Math.max(0, totalDeposited),
+    cash_balance: cashBalance,
+    total_deposited: totalDeposited,
   });
   $("sync-cash-modal").classList.add("hidden");
-  showToast("Đã đồng bộ số dư tiền mặt & vốn nạp thực tế!");
+  showToast(`✅ Đã cập nhật Tiền mặt khả dụng: ${fmtVnd(cashBalance)}!`);
   renderAccountSummary();
+  if (latestReport) renderDailyReport(latestReport);
 }
 
 // -------------------- Sell / Take-Profit Modal --------------------
@@ -1134,6 +1302,7 @@ async function handleConfirmSell(e) {
   await loadPortfolio();
   renderAccountSummary();
   renderPortfolio();
+  if (latestReport) renderDailyReport(latestReport);
 }
 
 // -------------------- Fee Settings --------------------
