@@ -35,10 +35,10 @@ GEMINI_SLEEP_SECONDS = float(os.getenv("GEMINI_SLEEP_SECONDS", "5.0"))
 # Ckey AI config (AI 2 — Phe Gấu / DeepSeek Free, OpenAI-compatible)
 CKEY_API_KEY = os.getenv("CKEY_API_KEY", "").strip()
 CKEY_BASE_URL = os.getenv("CKEY_BASE_URL", "https://api.xah.io/v1/chat/completions").strip()
-CKEY_MODEL = os.getenv("CKEY_MODEL", "deepseek-v4.1-flash-1017-free").strip()
+CKEY_MODEL = os.getenv("CKEY_MODEL", "deepseek-v4.1-flash").strip()
 CKEY_FALLBACK_MODELS = [
     m.strip()
-    for m in os.getenv("CKEY_FALLBACK_MODELS", "deepseek-v4.1-flash,qwen3.8-omni-flash").split(",")
+    for m in os.getenv("CKEY_FALLBACK_MODELS", "qwen3.8-omni-flash").split(",")
     if m.strip()
 ]
 CKEY_TIMEOUT_SECONDS = float(os.getenv("CKEY_TIMEOUT_SECONDS", "35.0"))

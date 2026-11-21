@@ -71,7 +71,7 @@ class TestGeminiAnalyst(unittest.TestCase):
     def test_default_models_updated(self):
         self.assertEqual(GEMINI_MODEL, "gemini-3.8-flash")
         self.assertEqual(GEMINI_FALLBACK_MODEL, "gemini-3.5-flash-lite")
-        self.assertEqual(CKEY_MODEL, "deepseek-v4.1-flash-1017-free")
+        self.assertEqual(CKEY_MODEL, "deepseek-v4.1-flash")
         self.assertEqual(OPENROUTER_MODEL, "nvidia/nemotron-3-ultra-550b-a55b:free")
 
     def test_extract_json_strips_think_and_fences(self):
@@ -225,7 +225,7 @@ class TestGeminiAnalyst(unittest.TestCase):
         self.assertIn("VN-Index đang dưới MA50", result["ai_referee_verdict"])
         self.assertIn("R:R tham chiếu thấp", result["ai_referee_verdict"])
         self.assertEqual(result["ai_models_used"]["bull"], "gemini:gemini-3.8-flash")
-        self.assertEqual(result["ai_models_used"]["bear"], "ckey:deepseek-v4.1-flash-1017-free")
+        self.assertEqual(result["ai_models_used"]["bear"], "ckey:deepseek-v4.1-flash")
         self.assertEqual(
             result["ai_models_used"]["referee"],
             "openrouter:nvidia/nemotron-3-ultra-550b-a55b:free",
