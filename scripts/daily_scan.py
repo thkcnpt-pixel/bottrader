@@ -28,6 +28,7 @@ from utils.config import (  # noqa: E402
     MAX_BUY_CANDIDATES,
     MAX_WATCHLIST_CANDIDATES,
     MIN_FUNDAMENTAL_SCORE,
+    vn_now,
     vn_today_str,
 )
 from utils.firebase_client import FirebaseClient  # noqa: E402
