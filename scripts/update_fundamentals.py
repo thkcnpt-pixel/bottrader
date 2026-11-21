@@ -10,9 +10,8 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -23,6 +22,7 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from utils.config import (  # noqa: E402
+    DATA_ERROR_ALERT_THRESHOLD,
     FIT_500K_MAX_PRICE_VND,
     FIT_500K_MIN_AVG_VALUE_VND,
     LOG_LEVEL,
@@ -412,128 +412,175 @@ def run_update_fundamentals(limit: int = 0) -> None:
     vn = VnstockClient()
     fb = FirebaseClient()
 
-    listed = vn.get_listed_symbols()
-    if not listed:
-        logger.error("No listed HOSE/HNX symbols retrieved. Aborting.")
-        return
-
-    if limit > 0:
-        listed = listed[:limit]
-        logger.info("Limiting scan to first %d tickers (--limit)", limit)
-
-    # Batch actual prices for accurate VND pricing
-    all_tickers = [item["ticker"] for item in listed]
-    actual_prices_map = vn.get_actual_prices_batch(all_tickers)
-
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
-    existing_cache = fb.get_all_fundamentals()
-    passed_count = 0
-    liquid_count = 0
-    total_listed = len(listed)
-
-    def _process_one(idx_item: Tuple[int, Dict[str, str]]) -> Tuple[bool, bool]:
-        idx, item = idx_item
-        ticker = item["ticker"]
-        exchange = item["exchange"]
-        sector_group = item["sector_group"]
-
-        try:
-            df_ohlcv = vn.get_ohlcv(ticker, days=45)
-            if df_ohlcv is None or len(df_ohlcv) < 20:
-                return (False, False)
-
-            recent_20 = df_ohlcv.tail(20)
-            avg_value_20d = float((recent_20["close"] * recent_20["volume"]).mean())
-            if avg_value_20d < MIN_AVG_VALUE_20D_VND:
-                return (False, False)
-
-            actual_close = float(
-                actual_prices_map.get(ticker, {}).get("actual_close") or recent_20.iloc[-1]["close"]
+    try:
+        listed = vn.get_listed_symbols()
+        if not listed:
+            msg = "No listed HOSE/HNX symbols retrieved. Aborting."
+            logger.error(msg)
+            fb.record_heartbeat("update_fundamentals", status="failed", error_message=msg)
+            fb.send_system_alert(
+                workflow="update_fundamentals",
+                title="🚨 Lỗi Tier 1: Không lấy được danh sách mã HOSE/HNX",
+                body="API VCI và VNDirect đều không trả về danh sách cổ phiếu niêm yết.",
+                dedup_key="no_listed_symbols",
             )
-            fit_500k = bool(
-                actual_close < FIT_500K_MAX_PRICE_VND
-                and avg_value_20d >= FIT_500K_MIN_AVG_VALUE_VND
-            )
+            return
 
-            statements = vn.get_financial_statements(ticker)
-            has_any_bctc = any(
-                isinstance(statements.get(k), pd.DataFrame) and not statements[k].empty
-                for k in ("income_statement", "balance_sheet", "cash_flow")
-            )
+        if limit > 0:
+            listed = listed[:limit]
+            logger.info("Limiting scan to first %d tickers (--limit)", limit)
 
-            if not has_any_bctc:
-                prev_doc = existing_cache.get(ticker)
-                if prev_doc and float(prev_doc.get("score", 0)) >= MIN_FUNDAMENTAL_SCORE:
-                    fb.save_fundamental(
-                        ticker,
-                        {
-                            **prev_doc,
-                            "missing_bctc": True,
-                            "fit_500k": fit_500k,
-                            "actual_close": round(actual_close, 0),
-                            "avg_value_20d": round(avg_value_20d, 0),
-                        },
-                    )
-                    return (True, True)
-                return (True, False)
+        # Batch actual prices for accurate VND pricing
+        all_tickers = [item["ticker"] for item in listed]
+        actual_prices_map = vn.get_actual_prices_batch(all_tickers)
 
-            metrics, missing_bctc = extract_fundamental_metrics(statements, sector_group)
-            score = score_financial(metrics) if sector_group == "financial" else score_non_financial(metrics)
+        from concurrent.futures import ThreadPoolExecutor, as_completed
 
-            if missing_bctc and ticker in existing_cache:
-                prev_score = float(existing_cache[ticker].get("score", 0))
-                if prev_score > score:
-                    score = prev_score
+        existing_cache = fb.get_all_fundamentals()
+        passed_count = 0
+        liquid_count = 0
+        error_count = 0
+        total_listed = len(listed)
 
-            if score >= MIN_FUNDAMENTAL_SCORE:
-                doc_payload = {
-                    "ticker": ticker,
-                    "exchange": exchange,
-                    "industry": item.get("industry", ""),
-                    "sector_group": sector_group,
-                    "score": score,
-                    "missing_bctc": missing_bctc,
-                    "fit_500k": fit_500k,
-                    "actual_close": round(actual_close, 0),
-                    "avg_value_20d": round(avg_value_20d, 0),
-                    "metrics": metrics,
-                }
-                fb.save_fundamental(ticker, doc_payload)
-                logger.info(
-                    "[%d/%d] SAVED %s (%s | %s) | Score=%.1f | fit_500k=%s | missing_bctc=%s",
-                    idx,
-                    total_listed,
-                    ticker,
-                    exchange,
-                    sector_group,
-                    score,
-                    fit_500k,
-                    missing_bctc,
+        def _process_one(idx_item: Tuple[int, Dict[str, str]]) -> Tuple[bool, bool, bool]:
+            idx, item = idx_item
+            ticker = item["ticker"]
+            exchange = item["exchange"]
+            sector_group = item["sector_group"]
+
+            try:
+                df_ohlcv = vn.get_ohlcv(ticker, days=45)
+                if df_ohlcv is None or len(df_ohlcv) < 20:
+                    return (False, False, False)
+
+                recent_20 = df_ohlcv.tail(20)
+                avg_value_20d = float((recent_20["close"] * recent_20["volume"]).mean())
+                if avg_value_20d < MIN_AVG_VALUE_20D_VND:
+                    return (False, False, False)
+
+                actual_close = float(
+                    actual_prices_map.get(ticker, {}).get("actual_close") or recent_20.iloc[-1]["close"]
                 )
-                return (True, True)
+                fit_500k = bool(
+                    actual_close < FIT_500K_MAX_PRICE_VND
+                    and avg_value_20d >= FIT_500K_MIN_AVG_VALUE_VND
+                )
 
-            return (True, False)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Error processing %s: %s", ticker, exc)
-            return (False, False)
+                statements = vn.get_financial_statements(ticker)
+                has_any_bctc = any(
+                    isinstance(statements.get(k), pd.DataFrame) and not statements[k].empty
+                    for k in ("income_statement", "balance_sheet", "cash_flow")
+                )
 
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        futures = [executor.submit(_process_one, pair) for pair in enumerate(listed, 1)]
-        for fut in as_completed(futures):
-            is_liq, is_saved = fut.result()
-            if is_liq:
-                liquid_count += 1
-            if is_saved:
-                passed_count += 1
+                if not has_any_bctc:
+                    prev_doc = existing_cache.get(ticker)
+                    if prev_doc and float(prev_doc.get("score", 0)) >= MIN_FUNDAMENTAL_SCORE:
+                        fb.save_fundamental(
+                            ticker,
+                            {
+                                **prev_doc,
+                                "missing_bctc": True,
+                                "fit_500k": fit_500k,
+                                "actual_close": round(actual_close, 0),
+                                "avg_value_20d": round(avg_value_20d, 0),
+                            },
+                        )
+                        return (True, True, False)
+                    return (True, False, False)
 
-    logger.info(
-        "Tier 1 complete: scanned=%d, passed_liquidity=%d, saved_fundamentals(>=%.0f)=%d",
-        total_listed,
-        liquid_count,
-        MIN_FUNDAMENTAL_SCORE,
-        passed_count,
-    )
+                metrics, missing_bctc = extract_fundamental_metrics(statements, sector_group)
+                score = score_financial(metrics) if sector_group == "financial" else score_non_financial(metrics)
+
+                if missing_bctc and ticker in existing_cache:
+                    prev_score = float(existing_cache[ticker].get("score", 0))
+                    if prev_score > score:
+                        score = prev_score
+
+                if score >= MIN_FUNDAMENTAL_SCORE:
+                    doc_payload = {
+                        "ticker": ticker,
+                        "exchange": exchange,
+                        "industry": item.get("industry", ""),
+                        "sector_group": sector_group,
+                        "score": score,
+                        "missing_bctc": missing_bctc,
+                        "fit_500k": fit_500k,
+                        "actual_close": round(actual_close, 0),
+                        "avg_value_20d": round(avg_value_20d, 0),
+                        "metrics": metrics,
+                    }
+                    fb.save_fundamental(ticker, doc_payload)
+                    logger.info(
+                        "[%d/%d] SAVED %s (%s | %s) | Score=%.1f | fit_500k=%s | missing_bctc=%s",
+                        idx,
+                        total_listed,
+                        ticker,
+                        exchange,
+                        sector_group,
+                        score,
+                        fit_500k,
+                        missing_bctc,
+                    )
+                    return (True, True, False)
+
+                return (True, False, False)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Error processing %s: %s", ticker, exc)
+                return (False, False, True)
+
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = [executor.submit(_process_one, pair) for pair in enumerate(listed, 1)]
+            for fut in as_completed(futures):
+                is_liq, is_saved, is_err = fut.result()
+                if is_liq:
+                    liquid_count += 1
+                if is_saved:
+                    passed_count += 1
+                if is_err:
+                    error_count += 1
+
+        error_rate = (error_count / total_listed) if total_listed > 0 else 0.0
+        status = "degraded" if error_rate > DATA_ERROR_ALERT_THRESHOLD else "ok"
+        fb.record_heartbeat(
+            "update_fundamentals",
+            status=status,
+            metrics={
+                "scanned": total_listed,
+                "passed_liquidity": liquid_count,
+                "saved_fundamentals": passed_count,
+                "errors": error_count,
+                "error_rate": round(error_rate, 3),
+            },
+        )
+        if total_listed >= 10 and (passed_count == 0 or error_rate > DATA_ERROR_ALERT_THRESHOLD):
+            fb.send_system_alert(
+                workflow="update_fundamentals",
+                title="⚠️ Cảnh báo Tier 1: Quét BCTC bất thường",
+                body=(
+                    f"Quét {total_listed} mã: đạt thanh khoản {liquid_count}, lưu {passed_count} mã, "
+                    f"lỗi {error_count} mã ({error_rate:.0%})."
+                ),
+                dedup_key="bctc_scan_degraded",
+            )
+
+        logger.info(
+            "Tier 1 complete: scanned=%d, passed_liquidity=%d, saved_fundamentals(>=%.0f)=%d, errors=%d",
+            total_listed,
+            liquid_count,
+            MIN_FUNDAMENTAL_SCORE,
+            passed_count,
+            error_count,
+        )
+    except Exception as exc:
+        logger.exception("Unhandled failure in run_update_fundamentals: %s", exc)
+        fb.record_heartbeat("update_fundamentals", status="failed", error_message=str(exc))
+        fb.send_system_alert(
+            workflow="update_fundamentals",
+            title="🚨 Lỗi nghiêm trọng: Quét BCTC tuần thất bại",
+            body=f"Workflow update_fundamentals bị dừng: {str(exc)[:180]}",
+            dedup_key="crash",
+        )
+        raise
 
 
 if __name__ == "__main__":

@@ -23,6 +23,9 @@ from utils.config import (
     INTRADAY_FLOOR_HOSE_PCT,
     INTRADAY_MA50_BREACH_PCT,
     INTRADAY_VOL_SPIKE_RATIO,
+    MAX_PRICE_BAND_HNX_PCT,
+    MAX_PRICE_BAND_HOSE_PCT,
+    MAX_PRICE_BAND_UPCOM_PCT,
     PULLBACK_MA20_HIGH_RATIO,
     PULLBACK_MA20_LOW_RATIO,
     PULLBACK_RSI_MAX,
@@ -54,12 +57,31 @@ def compute_rsi(close: pd.Series, period: int = 14) -> pd.Series:
     return rsi
 
 
+def compute_atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
+    """Wilder's Average True Range (ATR)."""
+    high = df["high"].astype(float)
+    low = df["low"].astype(float)
+    close = df["close"].astype(float)
+    prev_close = close.shift(1)
+
+    tr1 = high - low
+    tr2 = (high - prev_close).abs()
+    tr3 = (low - prev_close).abs()
+    true_range = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    return true_range.ewm(alpha=1.0 / period, min_periods=period, adjust=False).mean()
+
+
 def add_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
-    """Attach MA20, MA50, RSI14, Vol_MA20 to an OHLCV DataFrame (sorted ascending by time)."""
+    """Attach MA20, MA50, MA200, RSI14, ATR14, Vol_MA20 to an OHLCV DataFrame (sorted ascending by time)."""
     out = df.copy()
     out["ma20"] = compute_sma(out["close"], 20)
     out["ma50"] = compute_sma(out["close"], 50)
+    out["ma200"] = compute_sma(out["close"], 200)
     out["rsi14"] = compute_rsi(out["close"], 14)
+    if all(col in out.columns for col in ("high", "low", "close")):
+        out["atr14"] = compute_atr(out, 14)
+    else:
+        out["atr14"] = np.nan
     out["vol_ma20"] = compute_sma(out["volume"], 20)
     return out
 
@@ -129,6 +151,7 @@ def detect_buy_signal(df: pd.DataFrame) -> Optional[Dict[str, Any]]:
     ma20 = float(curr["ma20"])
     ma50 = float(curr["ma50"])
     rsi14 = float(curr["rsi14"])
+    atr14 = float(curr["atr14"]) if ("atr14" in curr and not np.isnan(curr["atr14"])) else 0.0
     vol = float(curr["volume"])
     vol_ma20 = float(curr["vol_ma20"])
 
@@ -161,6 +184,7 @@ def detect_buy_signal(df: pd.DataFrame) -> Optional[Dict[str, Any]]:
             "ma20": round(ma20, 2),
             "ma50": round(ma50, 2),
             "rsi14": round(rsi14, 2),
+            "atr14": round(atr14, 2),
             "vol_ratio": round(vol_ratio, 2),
             "reason": (
                 f"Pullback vùng MA20 ({close_p/ma20 - 1:+.1%}), "
@@ -200,6 +224,7 @@ def detect_buy_signal(df: pd.DataFrame) -> Optional[Dict[str, Any]]:
                 "ma20": round(ma20, 2),
                 "ma50": round(ma50, 2),
                 "rsi14": round(rsi14, 2),
+                "atr14": round(atr14, 2),
                 "vol_ratio": round(vol_ratio, 2),
                 "reason": (
                     f"Breakout nền chặt {window} phiên (biên độ {base_range:.1%}), "
@@ -227,14 +252,17 @@ def evaluate_portfolio_position(
     close_adj = float(curr["close"])
     ma50_adj = float(curr["ma50"]) if not np.isnan(curr["ma50"]) else 0.0
     ma20_adj = float(curr["ma20"]) if not np.isnan(curr["ma20"]) else 0.0
+    atr14_adj = float(curr["atr14"]) if ("atr14" in curr and not np.isnan(curr["atr14"])) else 0.0
 
     # Recent swing low: lowest low of prior 20 sessions (excluding today)
     recent_low_adj = float(data.iloc[-21:-1]["low"].min()) if len(data) >= 21 else float(data.iloc[:-1]["low"].min())
 
-    # Convert MA50 to actual-price scale using close_actual / close_adj ratio
+    # Convert MA50/MA20/ATR14 to actual-price scale using close_actual / close_adj ratio
     price_scale = (actual_close / close_adj) if close_adj > 0 else 1.0
     ma50_actual = round(ma50_adj * price_scale, 0)
     ma20_actual = round(ma20_adj * price_scale, 0)
+    atr14_actual = round(atr14_adj * price_scale, 0)
+    chandelier_stop = round(max(0.0, highest_price - 2.5 * atr14_actual), 0) if atr14_actual > 0 else 0.0
 
     pnl_pct = ((actual_close - buy_price) / buy_price * 100.0) if buy_price > 0 else 0.0
     drawdown_from_high_pct = (
@@ -317,9 +345,39 @@ def evaluate_portfolio_position(
         "drawdown_from_high_pct": round(drawdown_from_high_pct, 2),
         "ma20": ma20_actual,
         "ma50": ma50_actual,
+        "atr14": atr14_actual,
+        "chandelier_stop": chandelier_stop,
         "action": action,
         "alerts": alerts,
     }
+
+
+def is_valid_price_tick(
+    current_price: float,
+    ref_price: float = 0.0,
+    exchange: str = "HOSE",
+) -> bool:
+    """Validate an intraday price tick against exchange daily price-limit bands.
+
+    Prevents bad API ticks (e.g., 0, negative, x1000 unit glitch, or spikes outside
+    daily ceiling/floor limits) from corrupting `highest_price` trailing stops or
+    triggering false intraday alerts.
+    """
+    if current_price is None or np.isnan(current_price) or current_price <= 0:
+        return False
+    if ref_price is None or np.isnan(ref_price) or ref_price <= 0:
+        return True
+
+    ex = str(exchange or "HOSE").upper().strip()
+    if ex == "HOSE":
+        max_band_pct = MAX_PRICE_BAND_HOSE_PCT
+    elif ex == "HNX":
+        max_band_pct = MAX_PRICE_BAND_HNX_PCT
+    else:
+        max_band_pct = MAX_PRICE_BAND_UPCOM_PCT
+
+    change_pct = abs(current_price - ref_price) / ref_price * 100.0
+    return bool(change_pct <= max_band_pct)
 
 
 def evaluate_intraday_alert(
@@ -340,6 +398,8 @@ def evaluate_intraday_alert(
       3. Surge >= +6.5% (ceiling alert / proactive take-profit reminder).
     """
     if ref_price <= 0 or current_price <= 0:
+        return []
+    if not is_valid_price_tick(current_price=current_price, ref_price=ref_price, exchange=exchange):
         return []
 
     change_pct = (current_price - ref_price) / ref_price * 100.0

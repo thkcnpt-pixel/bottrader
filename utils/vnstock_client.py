@@ -11,7 +11,6 @@ import time
 from datetime import timedelta
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-import numpy as np
 import pandas as pd
 import requests
 
@@ -99,12 +98,15 @@ class VnstockClient:
         action_name: str,
         handlers: Dict[str, Callable[[], Any]],
     ) -> Tuple[Any, Optional[str]]:
+        from utils.data_providers import GLOBAL_PROVIDER_HEALTH
+
         last_err: Optional[Exception] = None
         for source in self.sources:
             fn = handlers.get(source)
             if fn is None:
                 continue
             for attempt in range(1, self.max_retries + 1):
+                t0 = time.perf_counter()
                 try:
                     res = fn()
                     if res is not None:
@@ -112,9 +114,20 @@ class VnstockClient:
                             raise ValueError(f"Empty DataFrame from {source}")
                         if isinstance(res, (list, dict)) and len(res) == 0:
                             raise ValueError(f"Empty payload from {source}")
+                        GLOBAL_PROVIDER_HEALTH.record_call(
+                            source,
+                            success=True,
+                            elapsed_ms=(time.perf_counter() - t0) * 1000.0,
+                        )
                         return res, source
                 except Exception as exc:  # noqa: BLE001
                     last_err = exc
+                    GLOBAL_PROVIDER_HEALTH.record_call(
+                        source,
+                        success=False,
+                        elapsed_ms=(time.perf_counter() - t0) * 1000.0,
+                        error=str(exc),
+                    )
                     logger.warning(
                         "[market_api] %s failed on %s (%d/%d): %s",
                         action_name,

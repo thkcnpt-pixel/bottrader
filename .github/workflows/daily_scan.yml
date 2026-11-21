@@ -5,6 +5,11 @@ on:
     # Thứ 2 - Thứ 6 lúc 18:00 (UTC+7) = 11:00 UTC
     - cron: "0 11 * * 1-5"
   workflow_dispatch:
+    inputs:
+      force:
+        description: "Quét cưỡng bức kể cả ngày nghỉ lễ/cuối tuần (true/false)"
+        required: false
+        default: "true"
 
 concurrency:
   group: daily-scan
@@ -38,5 +43,16 @@ jobs:
           GEMINI_FALLBACK_MODEL: gemini-3.5-flash-lite
           VNSTOCK_PRIMARY_SOURCE: VCI
           VNSTOCK_FALLBACK_SOURCE: TCBS
+          FORCE_SCAN: ${{ github.event_name == 'workflow_dispatch' && (github.event.inputs.force || 'true') || 'false' }}
           PYTHONPATH: .
         run: python scripts/daily_scan.py
+
+      - name: Notify on Workflow Failure
+        if: failure()
+        env:
+          FIREBASE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
+          PYTHONPATH: .
+        run: |
+          python scripts/notify_workflow_failure.py \
+            --workflow daily_scan \
+            --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

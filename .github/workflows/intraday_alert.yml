@@ -9,10 +9,15 @@ on:
     # Phiên chiều (UTC+7): 13:15, 13:45, 14:15, 14:45 = 06:15, 06:45, 07:15, 07:45 UTC
     - cron: "15,45 6-7 * * 1-5"
   workflow_dispatch:
+    inputs:
+      force:
+        description: "Bỏ qua kiểm tra ngày nghỉ lễ/cuối tuần (true/false)"
+        required: false
+        default: "true"
 
 concurrency:
   group: intraday-alert
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   intraday-alert:
@@ -39,5 +44,16 @@ jobs:
           FIREBASE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
           VNSTOCK_PRIMARY_SOURCE: VCI
           VNSTOCK_FALLBACK_SOURCE: TCBS
+          FORCE_SCAN: ${{ github.event_name == 'workflow_dispatch' && (github.event.inputs.force || 'true') || 'false' }}
           PYTHONPATH: .
         run: python scripts/intraday_alert.py
+
+      - name: Notify on Workflow Failure
+        if: failure()
+        env:
+          FIREBASE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
+          PYTHONPATH: .
+        run: |
+          python scripts/notify_workflow_failure.py \
+            --workflow intraday_alert \
+            --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

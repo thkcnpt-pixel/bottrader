@@ -32,9 +32,12 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip()
 GEMINI_FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-3.5-flash-lite").strip()
 GEMINI_SLEEP_SECONDS = float(os.getenv("GEMINI_SLEEP_SECONDS", "5.0"))
 
-# Execution flags
+# Execution flags & Reliability (Phase 1)
 DRY_RUN = os.getenv("DRY_RUN", "false").lower() in ("1", "true", "yes")
+FORCE_SCAN = os.getenv("FORCE_SCAN", "false").lower() in ("1", "true", "yes")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+VN_EXTRA_HOLIDAYS = os.getenv("VN_EXTRA_HOLIDAYS", "").strip()
+DATA_ERROR_ALERT_THRESHOLD = float(os.getenv("DATA_ERROR_ALERT_THRESHOLD", "0.25"))
 
 # Tier 1 — Fundamental Screening Constants
 ALLOWED_EXCHANGES = {"HOSE", "HNX"}
@@ -68,9 +71,16 @@ BREAKOUT_VOL_MULTIPLIER = 1.5
 BREAKOUT_RSI_MIN = 55.0
 BREAKOUT_RSI_MAX = 68.0
 
-# Tier 3 — Portfolio & Intraday Risk Constants
+# Tier 3 — Portfolio, ATR Risk & Intraday Constants (Phase 1 & 2)
 TAKE_PROFIT_HALF_PCT = 15.0         # +15%
 TRAILING_STOP_DROP_PCT = 8.0        # -8% from highest_price after sold_half
+ATR_PERIOD = 14
+ATR_INITIAL_STOP_MULT = 2.0         # Initial stop = entry - 2.0 * ATR14
+ATR_TRAILING_STOP_MULT = 2.5        # Chandelier trailing stop = high - 2.5 * ATR14
+DEFAULT_RISK_PER_TRADE_PCT = 1.5    # Risk 1.5% of NAV per trade
+MAX_SINGLE_POSITION_NAV_PCT = 35.0  # Max 35% of NAV in a single ticker
+MAX_SECTOR_EXPOSURE_NAV_PCT = 50.0  # Max 50% of NAV in a single sector_group
+
 INTRADAY_DROP_THRESHOLD_PCT = -3.5  # <= -3.5%
 INTRADAY_VOL_SPIKE_RATIO = 1.3      # Abnormal selling volume ratio
 INTRADAY_MA50_BREACH_PCT = -2.0     # > 2% below MA50
@@ -78,7 +88,12 @@ INTRADAY_CEILING_SURGE_PCT = 6.5    # >= +6.5%
 INTRADAY_FLOOR_HOSE_PCT = -6.8      # Near/at HOSE floor (-7%)
 INTRADAY_FLOOR_HNX_PCT = -9.8       # Near/at HNX floor (-10%)
 
-# Firestore Collections
+# Price-tick sanity bands vs reference price (includes tick-rounding tolerance)
+MAX_PRICE_BAND_HOSE_PCT = 7.5
+MAX_PRICE_BAND_HNX_PCT = 10.5
+MAX_PRICE_BAND_UPCOM_PCT = 15.5
+
+# Firestore Collections & System Docs
 COL_FUNDAMENTALS = "fundamentals"
 COL_PORTFOLIO = "portfolio"
 COL_DAILY_REPORTS = "daily_reports"
@@ -86,4 +101,4 @@ COL_SETTINGS = "settings"
 COL_INTRADAY_STATE = "intraday_alerts_state"
 DOC_FCM_TOKENS = "fcm_tokens"
 DOC_ACCOUNT = "account"
-
+DOC_SYSTEM_HEALTH = "system_health"

@@ -44,3 +44,13 @@ jobs:
         run: |
           LIMIT="${{ github.event.inputs.limit || '0' }}"
           python scripts/update_fundamentals.py --limit "${LIMIT}"
+
+      - name: Notify on Workflow Failure
+        if: failure()
+        env:
+          FIREBASE_SERVICE_ACCOUNT_JSON: ${{ secrets.FIREBASE_SERVICE_ACCOUNT_JSON }}
+          PYTHONPATH: .
+        run: |
+          python scripts/notify_workflow_failure.py \
+            --workflow update_fundamentals \
+            --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

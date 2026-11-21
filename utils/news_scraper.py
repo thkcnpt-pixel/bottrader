@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from urllib.parse import quote_plus
 
 import feedparser
@@ -199,3 +199,47 @@ def collect_ticker_news(
         "articles": selected,
         "events": (vnstock_events or [])[:6],
     }
+
+
+NEGATIVE_NEWS_KEYWORDS = (
+    "khởi tố",
+    "bắt tạm giam",
+    "cơ quan điều tra",
+    "hủy niêm yết",
+    "đình chỉ giao dịch",
+    "hạn chế giao dịch",
+    "cảnh cáo",
+    "kiểm soát đặc biệt",
+    "xử phạt",
+    "truy thu thuế",
+    "thua lỗ nặng",
+    "lỗ kỷ lục",
+    "vỡ nợ",
+    "chậm trả lãi trái phiếu",
+)
+
+
+def detect_holding_negative_news(
+    ticker: str,
+    news_bundle: Optional[Dict[str, Any]],
+) -> List[Dict[str, str]]:
+    """Scan news articles for a holding ticker and return any matching severe risk keywords."""
+    if not news_bundle:
+        return []
+    articles = news_bundle.get("articles") or []
+    flagged: List[Dict[str, str]] = []
+
+    for art in articles:
+        title = str(art.get("title") or "").strip()
+        summary = str(art.get("summary") or art.get("content") or "").strip()
+        combined_lower = f"{title} {summary}".lower()
+        matched_kw = [kw for kw in NEGATIVE_NEWS_KEYWORDS if kw in combined_lower]
+        if matched_kw:
+            flagged.append({
+                "ticker": ticker,
+                "title": title,
+                "source": str(art.get("source") or "News"),
+                "matched_keywords": ", ".join(matched_kw),
+            })
+
+    return flagged

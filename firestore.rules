@@ -4,7 +4,18 @@ service cloud.firestore {
     // THAY ĐỔI email bên dưới thành email tài khoản Firebase Auth cá nhân của bạn
     function isOwner() {
       return request.auth != null
-        && request.auth.token.email == "tthien2k9@gmail.com";
+        && request.auth.token.email == "tthien2k9@gmail.com"
+        && request.auth.token.email_verified == true;
+    }
+
+    // Kiểm tra schema hợp lệ cho mọi thao tác tạo/cập nhật danh mục (hỗ trợ cả setDoc merge:true)
+    function isValidPortfolioWrite(ticker, data) {
+      return ticker.matches('^[A-Z0-9]{3,10}$')
+        && (!('buy_price' in data) || (data.buy_price is number && data.buy_price > 0))
+        && (!('quantity' in data) || (data.quantity is number && data.quantity >= 0))
+        && (!('highest_price' in data) || (data.highest_price is number && data.highest_price >= 0))
+        && (!('latest_price' in data) || (data.latest_price is number && data.latest_price >= 0))
+        && (!('status' in data) || data.status in ['holding', 'closed', 'watching']);
     }
 
     // 1. fundamentals/{ticker}: PWA chỉ cần đọc, Backend (Admin SDK) bypass rules để ghi
@@ -13,9 +24,10 @@ service cloud.firestore {
       allow write: if false;
     }
 
-    // 2. portfolio/{ticker}: Chủ sở hữu đọc/ghi trực tiếp lệnh Mua/Bán/Chốt 1/2
+    // 2. portfolio/{ticker}: Chủ sở hữu đọc/xóa và ghi lệnh Mua/Bán/Chốt 1/2 có kiểm tra schema
     match /portfolio/{ticker} {
-      allow read, write: if isOwner();
+      allow read, delete: if isOwner();
+      allow create, update: if isOwner() && isValidPortfolioWrite(ticker, request.resource.data);
     }
 
     // 3. daily_reports/{date}: PWA chỉ cần đọc báo cáo ngày
@@ -24,9 +36,24 @@ service cloud.firestore {
       allow write: if false;
     }
 
-    // 4. settings/{docId}: Chủ sở hữu đọc/ghi FCM tokens (settings/fcm_tokens)
-    match /settings/{docId} {
+    // 4a. settings/fcm_tokens: Chủ sở hữu đọc/ghi danh sách FCM tokens (bắt buộc kiểu list)
+    match /settings/fcm_tokens {
+      allow read: if isOwner();
+      allow create, update: if isOwner()
+        && ('tokens' in request.resource.data)
+        && (request.resource.data.tokens is list);
+      allow delete: if isOwner();
+    }
+
+    // 4b. settings/account: Chủ sở hữu đọc/ghi cấu hình phí, số dư tiền mặt và lịch sử chốt lời
+    match /settings/account {
       allow read, write: if isOwner();
+    }
+
+    // 4c. settings/system_health & các doc settings khác: PWA chỉ đọc, chỉ Backend Admin SDK được ghi
+    match /settings/{docId} {
+      allow read: if isOwner();
+      allow write: if false;
     }
 
     // 5. intraday_alerts_state/{date}: Trạng thái chống spam nội bộ của Backend

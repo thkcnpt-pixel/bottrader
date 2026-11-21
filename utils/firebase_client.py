@@ -15,8 +15,10 @@ from utils.config import (
     COL_SETTINGS,
     DOC_ACCOUNT,
     DOC_FCM_TOKENS,
+    DOC_SYSTEM_HEALTH,
     DRY_RUN,
     vn_now,
+    vn_today_str,
 )
 
 logger = logging.getLogger(__name__)
@@ -92,10 +94,39 @@ class FirebaseClient:
         return items
 
     def update_portfolio_fields(self, ticker: str, updates: Dict[str, Any]) -> None:
+        """Update portfolio tracking fields while preserving monotonic `highest_price`."""
         if self.dry_run:
             logger.info("[DRY_RUN] update_portfolio(%s): %s", ticker, updates)
             return
-        self._db.collection(COL_PORTFOLIO).document(ticker).set(updates, merge=True)
+
+        safe_updates = dict(updates)
+        doc_ref = self._db.collection(COL_PORTFOLIO).document(ticker)
+        try:
+            snap = doc_ref.get()
+            if getattr(snap, "exists", False):
+                existing = snap.to_dict() or {}
+                # Do not overwrite live tracking on a position that user already closed
+                if (
+                    existing.get("status")
+                    and existing.get("status") != "holding"
+                    and "status" not in safe_updates
+                ):
+                    logger.info(
+                        "Skipping portfolio tracking update for %s (status=%s)",
+                        ticker,
+                        existing.get("status"),
+                    )
+                    return
+                if "highest_price" in safe_updates:
+                    remote_high = float(
+                        existing.get("highest_price") or existing.get("buy_price") or 0.0
+                    )
+                    candidate_high = float(safe_updates["highest_price"] or 0.0)
+                    safe_updates["highest_price"] = max(remote_high, candidate_high)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Could not pre-read portfolio/%s before update: %s", ticker, exc)
+
+        doc_ref.set(safe_updates, merge=True)
 
     # -------------------- Account Settings --------------------
     def get_account_settings(self) -> Dict[str, Any]:
@@ -106,6 +137,8 @@ class FirebaseClient:
             "fee_buy_pct": 0.0,
             "fee_sell_pct": 0.0,
             "tax_sell_pct": 0.1,
+            "realized_trades": [],
+            "cash_flows": [],
         }
         if self.dry_run:
             return defaults
@@ -121,6 +154,8 @@ class FirebaseClient:
                 "fee_buy_pct": float(data.get("fee_buy_pct") or 0.0),
                 "fee_sell_pct": float(data.get("fee_sell_pct") or 0.0),
                 "tax_sell_pct": float(data.get("tax_sell_pct") if data.get("tax_sell_pct") is not None else 0.1),
+                "realized_trades": list(data.get("realized_trades") or []),
+                "cash_flows": list(data.get("cash_flows") or []),
             }
         except Exception as exc:  # noqa: BLE001
             logger.warning("Failed to fetch settings/account: %s", exc)
@@ -157,6 +192,73 @@ class FirebaseClient:
             {"date": date_str, "sent_keys": merged, "updated_at": vn_now().isoformat()},
             merge=True,
         )
+
+    # -------------------- Heartbeat & System Health Monitoring --------------------
+    def record_heartbeat(
+        self,
+        workflow: str,
+        status: str,
+        metrics: Optional[Dict[str, Any]] = None,
+        error_message: str = "",
+    ) -> None:
+        """Record workflow execution heartbeat in `settings/system_health`."""
+        now_iso = vn_now().isoformat()
+        today_str = vn_today_str()
+        entry = {
+            "status": status,
+            "date": today_str,
+            "timestamp": now_iso,
+            "metrics": metrics or {},
+            "error": error_message[:500] if error_message else "",
+        }
+        if self.dry_run:
+            logger.info("[DRY_RUN] record_heartbeat(%s): status=%s metrics=%s", workflow, status, metrics)
+            return
+        try:
+            self._db.collection(COL_SETTINGS).document(DOC_SYSTEM_HEALTH).set(
+                {
+                    "workflows": {workflow: entry},
+                    "updated_at": now_iso,
+                },
+                merge=True,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to record heartbeat for %s: %s", workflow, exc)
+
+    def send_system_alert(
+        self,
+        workflow: str,
+        title: str,
+        body: str,
+        dedup_key: Optional[str] = None,
+    ) -> int:
+        """Send an urgent system health / failure alert via FCM with daily deduplication."""
+        today_str = vn_today_str()
+        full_key = f"SYS:{workflow}:{dedup_key}" if dedup_key else ""
+        if full_key and not self.dry_run:
+            try:
+                sent_keys = self.get_sent_intraday_keys(today_str)
+                if full_key in sent_keys:
+                    logger.info("Skipping duplicate system alert %s (already sent today).", full_key)
+                    return 0
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("Could not check system alert dedup key %s: %s", full_key, exc)
+
+        sent = self.send_fcm_notification(
+            title=title,
+            body=body,
+            data={
+                "type": "system_alert",
+                "workflow": workflow,
+                "date": today_str,
+            },
+        )
+        if full_key and not self.dry_run:
+            try:
+                self.mark_intraday_keys_sent(today_str, [full_key])
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("Could not mark system alert dedup key %s: %s", full_key, exc)
+        return sent
 
     # -------------------- FCM Push Notifications --------------------
     def get_fcm_tokens(self) -> List[str]:
