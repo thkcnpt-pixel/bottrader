@@ -1258,7 +1258,29 @@ function calcTradingDaysSince(buyDateStr) {
 }
 
 // -------------------- Portfolio CRUD --------------------
-async function loadPortfolio() {
+let _portfolioLoadInflight = null;
+let _portfolioReloadQueued = false;
+// Coalesce overlapping reloads: concurrent callers share one Firestore read,
+// and a call arriving mid-flight triggers exactly one follow-up read (fresh data).
+function loadPortfolio() {
+  if (_portfolioLoadInflight) {
+    _portfolioReloadQueued = true;
+    return _portfolioLoadInflight;
+  }
+  _portfolioLoadInflight = (async () => {
+    try {
+      do {
+        _portfolioReloadQueued = false;
+        await _loadPortfolioOnce();
+      } while (_portfolioReloadQueued);
+    } finally {
+      _portfolioLoadInflight = null;
+    }
+  })();
+  return _portfolioLoadInflight;
+}
+
+async function _loadPortfolioOnce() {
   try {
     const snap = await getDocs(collection(db, "portfolio"));
     portfolioItems = [];
