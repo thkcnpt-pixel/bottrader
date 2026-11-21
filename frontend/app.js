@@ -254,6 +254,10 @@ function bindEvents() {
   $("portfolio-modal").addEventListener("click", (e) => {
     if (e.target === $("portfolio-modal")) closePortfolioModal();
   });
+  $("pf-ticker")?.addEventListener("input", updateDcaPreview);
+  $("pf-buy-price")?.addEventListener("input", updateDcaPreview);
+  $("pf-quantity")?.addEventListener("input", updateDcaPreview);
+  $("pf-accumulate-mode")?.addEventListener("change", updateDcaPreview);
   $("portfolio-form").addEventListener("submit", handleSavePortfolio);
 
   // Deposit / Withdraw Modal
@@ -789,20 +793,88 @@ function renderPerformanceStats(trades) {
   const sorted = [...trades].sort((a, b) => String(b.sell_date || "").localeCompare(String(a.sell_date || "")));
   listEl.innerHTML = sorted
     .slice(0, 15)
-    .map((t) => {
+    .map((t, idx) => {
       const pos = Number(t.net_pnl || 0) >= 0;
+      const tradeId = escapeHtml(t.id || `${t.ticker}_${t.sell_date}_${idx}`);
       return `
-        <div class="flex items-center justify-between bg-slate-950/60 rounded-lg px-2.5 py-1.5">
-          <div>
+        <div class="flex items-center justify-between gap-2 bg-slate-950/60 rounded-lg px-2.5 py-1.5">
+          <div class="min-w-0">
             <span class="font-bold text-white">${escapeHtml(t.ticker)}</span>
             <span class="text-slate-400"> • ${t.quantity} CP • ${escapeHtml(t.sell_date || "")}</span>
           </div>
-          <span class="font-semibold tabular-nums ${pos ? "text-emerald-400" : "text-rose-400"}">
-            ${fmtSignedVnd(t.net_pnl)} (${pos ? "+" : ""}${fmtNum(t.net_pnl_pct, 1)}%)
-          </span>
+          <div class="flex items-center gap-2 shrink-0">
+            <span class="font-semibold tabular-nums ${pos ? "text-emerald-400" : "text-rose-400"}">
+              ${fmtSignedVnd(t.net_pnl)} (${pos ? "+" : ""}${fmtNum(t.net_pnl_pct, 1)}%)
+            </span>
+            <button type="button" data-del-trade="${tradeId}" title="Xóa / Hoàn tác lệnh chốt này"
+                    class="text-slate-500 hover:text-rose-400 px-1 text-xs font-bold transition">
+              ✕
+            </button>
+          </div>
         </div>`;
     })
     .join("");
+
+  listEl.querySelectorAll("button[data-del-trade]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const targetId = btn.dataset.delTrade;
+      const allTrades = Array.isArray(accountState.realized_trades) ? accountState.realized_trades : [];
+      const foundIdx = allTrades.findIndex(
+        (t, idx) => String(t.id || `${t.ticker}_${t.sell_date}_${idx}`) === targetId
+      );
+      if (foundIdx === -1) return;
+      const tr = allTrades[foundIdx];
+      if (!confirm(`Xóa bản ghi chốt lời/lỗ mã ${tr.ticker} (${tr.quantity} CP ngày ${tr.sell_date})?`)) return;
+
+      const gross = Number(tr.sell_price || 0) * Number(tr.quantity || 0);
+      const netProceeds = Math.round(gross - Number(tr.fee_tax || 0));
+      const revertOrder = confirm(
+        `Bạn có muốn HOÀN TÁC luôn giao dịch bán này không?\n- OK: Trừ lại ${fmtVnd(netProceeds)} tiền bán khỏi Tiền mặt và cộng trả lại ${tr.quantity} CP ${tr.ticker} vào Danh mục đang giữ.\n- Cancel: Chỉ xóa dòng lịch sử thống kê này, giữ nguyên Tiền mặt & Danh mục.`
+      );
+
+      let newCash = Math.round(Number(accountState.cash_balance || 0));
+      if (revertOrder) {
+        newCash = Math.max(0, newCash - netProceeds);
+        const existingPos = portfolioItems.find((p) => p.ticker === tr.ticker);
+        if (existingPos && (existingPos.status || "holding") === "holding") {
+          const restoredQty = Number(existingPos.quantity || 0) + Number(tr.quantity || 0);
+          await setDoc(
+            doc(db, "portfolio", tr.ticker),
+            { quantity: restoredQty, status: "holding", updated_at: new Date().toISOString() },
+            { merge: true }
+          );
+        } else {
+          await setDoc(
+            doc(db, "portfolio", tr.ticker),
+            {
+              ticker: tr.ticker,
+              exchange: existingPos?.exchange || "HOSE",
+              buy_price: Number(tr.buy_price || 0),
+              quantity: Number(tr.quantity || 0),
+              buy_date: tr.buy_date || todayIso(),
+              highest_price: Math.max(Number(tr.buy_price || 0), Number(tr.sell_price || 0)),
+              sold_half: false,
+              status: "holding",
+              updated_at: new Date().toISOString(),
+            },
+            { merge: true }
+          );
+        }
+      }
+
+      const remainingTrades = allTrades.filter((_, i) => i !== foundIdx);
+      await persistAccount({
+        cash_balance: newCash,
+        realized_trades: remainingTrades,
+      });
+
+      showToast(revertOrder ? `Đã hoàn tác lệnh bán ${tr.ticker} & khôi phục cổ phiếu!` : `Đã xóa bản ghi thống kê ${tr.ticker}.`);
+      await loadPortfolio();
+      renderAccountSummary();
+      renderPortfolio();
+      if (latestReport) renderDailyReport(latestReport);
+    });
+  });
 }
 
 // -------------------- Portfolio CRUD --------------------
@@ -964,18 +1036,64 @@ function renderPortfolio() {
   });
 }
 
-function openPortfolioModal(item) {
+function updateDcaPreview() {
+  const isEdit = $("pf-ticker").disabled;
+  const banner = $("pf-dca-banner");
+  const preview = $("pf-dca-preview");
+  if (!banner || !preview) return;
+
+  if (isEdit) {
+    banner.classList.add("hidden");
+    return;
+  }
+
+  const ticker = ($("pf-ticker").value || "").trim().toUpperCase();
+  const existing = portfolioItems.find((x) => x.ticker === ticker && (x.status || "holding") === "holding");
+  if (!existing) {
+    banner.classList.add("hidden");
+    return;
+  }
+
+  banner.classList.remove("hidden");
+  const oldQty = Number(existing.quantity || 0);
+  const oldPrice = Number(existing.buy_price || 0);
+  const addQty = Number($("pf-quantity").value || 0);
+  const addPrice = Number($("pf-buy-price").value || 0);
+  const isAccumulate = $("pf-accumulate-mode").checked;
+
+  if (!isAccumulate) {
+    preview.innerHTML = `Đang giữ <strong>${oldQty} CP</strong> giá <strong>${fmtVnd(oldPrice)}</strong>. Bạn đang bỏ chọn cộng dồn → lệnh mới sẽ <strong>ghi đè</strong> vị thế cũ.`;
+    return;
+  }
+
+  if (addQty > 0 && addPrice > 0) {
+    const totalQty = oldQty + addQty;
+    const avgPrice = Math.round((oldQty * oldPrice + addQty * addPrice) / totalQty);
+    preview.innerHTML = `Đang giữ <strong>${oldQty} CP</strong> (${fmtVnd(oldPrice)}) + Mua thêm <strong>${addQty} CP</strong> (${fmtVnd(addPrice)}) ⇒ Tổng mới: <strong class="text-white">${totalQty} CP</strong> • Giá vốn TB mới: <strong class="text-emerald-300">${fmtVnd(avgPrice)}</strong>`;
+  } else {
+    preview.innerHTML = `Bạn đang nắm giữ <strong>${oldQty} CP ${escapeHtml(ticker)}</strong> giá vốn <strong>${fmtVnd(oldPrice)}</strong>. Nhập giá &amp; số lượng mua thêm để tự động tính giá trung bình.`;
+  }
+}
+
+function openPortfolioModal(item, prefill = null) {
   const isEdit = Boolean(item);
-  $("modal-title").textContent = isEdit ? `Cập nhật ${item.ticker}` : "Nhập lệnh Mua";
-  $("pf-ticker").value = item ? item.ticker : "";
+  $("modal-title").textContent = isEdit
+    ? `Cập nhật ${item.ticker}`
+    : prefill?.ticker
+    ? `Nhập lệnh Mua ${prefill.ticker}`
+    : "Nhập lệnh Mua";
+  $("pf-ticker").value = item ? item.ticker : prefill?.ticker || "";
   $("pf-ticker").disabled = isEdit;
-  $("pf-exchange").value = item?.exchange || "HOSE";
-  $("pf-buy-price").value = item?.buy_price || "";
-  $("pf-quantity").value = item?.quantity || "";
+  $("pf-exchange").value = item?.exchange || prefill?.exchange || "HOSE";
+  $("pf-buy-price").value = item?.buy_price || prefill?.buy_price || "";
+  $("pf-quantity").value = item?.quantity || prefill?.quantity || "";
   $("pf-buy-date").value = item?.buy_date || todayIso();
   $("pf-status").value = item?.status || "holding";
   $("pf-sold-half").checked = Boolean(item?.sold_half);
-  $("pf-notes").value = item?.notes || "";
+  $("pf-notes").value = item?.notes || prefill?.notes || "";
+  if ($("pf-accumulate-mode")) {
+    $("pf-accumulate-mode").checked = true;
+  }
   $("pf-deduct-cash-wrap").classList.remove("hidden");
   const deductLabel = document.querySelector('label[for="pf-deduct-cash"]');
   if (deductLabel) {
@@ -986,6 +1104,7 @@ function openPortfolioModal(item) {
   $("pf-deduct-cash").checked = true;
   $("pf-form-error").classList.add("hidden");
   $("pf-form-error").textContent = "";
+  updateDcaPreview();
   $("portfolio-modal").classList.remove("hidden");
 }
 
@@ -1005,37 +1124,59 @@ async function handleSavePortfolio(e) {
   btn.textContent = "Đang lưu...";
 
   const isEdit = $("pf-ticker").disabled;
-  const buyPrice = Number($("pf-buy-price").value);
-  const qty = Number($("pf-quantity").value);
+  const inputBuyPrice = Number($("pf-buy-price").value);
+  const inputQty = Number($("pf-quantity").value);
   const existing = portfolioItems.find((x) => x.ticker === ticker);
-  const highestPrice = Math.max(Number(existing?.highest_price || 0), buyPrice);
+  const isExistingHolding = Boolean(existing && (existing.status || "holding") === "holding");
+  const shouldAccumulate = !isEdit && isExistingHolding && Boolean($("pf-accumulate-mode")?.checked);
+
+  let finalBuyPrice = inputBuyPrice;
+  let finalQty = inputQty;
+  let finalNotes = $("pf-notes").value.trim();
+
+  if (shouldAccumulate) {
+    const oldQty = Number(existing.quantity || 0);
+    const oldPrice = Number(existing.buy_price || 0);
+    finalQty = oldQty + inputQty;
+    finalBuyPrice = Math.round((oldQty * oldPrice + inputQty * inputBuyPrice) / finalQty);
+    if (!finalNotes && existing.notes) {
+      finalNotes = existing.notes;
+    }
+  }
+
+  const highestPrice = Math.max(Number(existing?.highest_price || 0), finalBuyPrice, inputBuyPrice);
 
   const payload = {
     ticker,
     exchange: $("pf-exchange").value,
-    buy_price: buyPrice,
-    quantity: qty,
+    buy_price: finalBuyPrice,
+    quantity: finalQty,
     buy_date: $("pf-buy-date").value,
     highest_price: highestPrice,
     sold_half: $("pf-sold-half").checked,
     status: $("pf-status").value,
-    notes: $("pf-notes").value.trim(),
+    notes: finalNotes,
     updated_at: new Date().toISOString(),
   };
 
   try {
     const { buyFee } = getFeeRates();
-    const newCost = payload.status === "holding" ? Math.round(buyPrice * qty * (1 + buyFee)) : 0;
-    const oldCost =
-      existing && (existing.status || "holding") === "holding"
-        ? Math.round(Number(existing.buy_price || 0) * Number(existing.quantity || 0) * (1 + buyFee))
-        : 0;
+    const newCost = payload.status === "holding" ? Math.round(finalBuyPrice * finalQty * (1 + buyFee)) : 0;
+    const oldCost = isExistingHolding
+      ? Math.round(Number(existing.buy_price || 0) * Number(existing.quantity || 0) * (1 + buyFee))
+      : 0;
+    const addedOrderCost = Math.round(inputBuyPrice * inputQty * (1 + buyFee));
 
     await setDoc(doc(db, "portfolio", ticker), payload, { merge: true });
 
     // Reconcile cash balance and net deposited capital accurately
     if ($("pf-deduct-cash").checked) {
-      const costDelta = isEdit ? newCost - oldCost : newCost;
+      const costDelta = shouldAccumulate
+        ? addedOrderCost
+        : isEdit || isExistingHolding
+        ? newCost - oldCost
+        : newCost;
+
       if (costDelta !== 0) {
         const currentCash = Math.round(Number(accountState.cash_balance || 0));
         const currentDeposited = Math.round(Number(accountState.total_deposited || 0));
@@ -1058,11 +1199,37 @@ async function handleSavePortfolio(e) {
     }
 
     closePortfolioModal();
-    showToast(`Đã lưu lệnh ${ticker} vào Firestore!`);
+    showToast(
+      shouldAccumulate
+        ? `✅ Đã mua thêm ${inputQty} CP ${ticker} (Tổng: ${finalQty} CP • Giá TB: ${fmtVnd(finalBuyPrice)})`
+        : `✅ Đã lưu lệnh ${ticker} vào Firestore!`
+    );
     await loadPortfolio();
     renderAccountSummary();
     renderPortfolio();
     if (latestReport) renderDailyReport(latestReport);
+
+    // Upgrade 4: Immediately fetch live market price in the background for holding position
+    if (payload.status === "holding") {
+      fetchLivePriceForTicker(ticker)
+        .then(async (livePrice) => {
+          if (!livePrice) return;
+          const nowLabel = new Date().toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" });
+          const pnlPct =
+            finalBuyPrice > 0 ? Number((((livePrice - finalBuyPrice) / finalBuyPrice) * 100).toFixed(2)) : 0;
+          const liveUpdates = {
+            latest_price: livePrice,
+            latest_pnl_pct: pnlPct,
+            last_checked: `${todayIso()} ${nowLabel}`,
+          };
+          if (livePrice > highestPrice) liveUpdates.highest_price = livePrice;
+          await setDoc(doc(db, "portfolio", ticker), liveUpdates, { merge: true });
+          await loadPortfolio();
+          renderAccountSummary();
+          renderPortfolio();
+        })
+        .catch(() => {});
+    }
   } catch (err) {
     errEl.textContent = `Lỗi lưu Firestore: ${err.code ? `[${err.code}] ` : ""}${err.message || err}`;
     errEl.classList.remove("hidden");
@@ -1092,22 +1259,62 @@ function renderCashflowHistory() {
     return;
   }
   listEl.innerHTML = flows
-    .slice(0, 10)
-    .map((cf) => {
+    .slice(0, 15)
+    .map((cf, idx) => {
       const isDep = cf.type !== "withdraw";
+      const cfId = escapeHtml(cf.id || `${cf.date}_${cf.amount}_${idx}`);
       return `
-        <div class="flex items-center justify-between bg-slate-950/60 rounded-lg px-2.5 py-1.5">
-          <div>
+        <div class="flex items-center justify-between gap-2 bg-slate-950/60 rounded-lg px-2.5 py-1.5">
+          <div class="min-w-0">
             <span class="${isDep ? "text-emerald-300" : "text-rose-300"} font-semibold">${isDep ? "Nạp" : "Rút"}</span>
             <span class="text-slate-400"> • ${escapeHtml(cf.date || "")}</span>
-            ${cf.note ? `<p class="text-[10px] text-slate-500">${escapeHtml(cf.note)}</p>` : ""}
+            ${cf.note ? `<p class="text-[10px] text-slate-500 truncate">${escapeHtml(cf.note)}</p>` : ""}
           </div>
-          <span class="font-semibold tabular-nums ${isDep ? "text-emerald-400" : "text-rose-400"}">
-            ${isDep ? "+" : "-"}${fmtVnd(cf.amount)}
-          </span>
+          <div class="flex items-center gap-2 shrink-0">
+            <span class="font-semibold tabular-nums ${isDep ? "text-emerald-400" : "text-rose-400"}">
+              ${isDep ? "+" : "-"}${fmtVnd(cf.amount)}
+            </span>
+            <button type="button" data-del-cf="${cfId}" title="Xóa & Hoàn tác giao dịch nạp/rút này"
+                    class="text-slate-500 hover:text-rose-400 px-1 text-xs font-bold transition">
+              ✕
+            </button>
+          </div>
         </div>`;
     })
     .join("");
+
+  listEl.querySelectorAll("button[data-del-cf]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const targetId = btn.dataset.delCf;
+      const allFlows = Array.isArray(accountState.cash_flows) ? accountState.cash_flows : [];
+      const foundIdx = allFlows.findIndex(
+        (cf, idx) => String(cf.id || `${cf.date}_${cf.amount}_${idx}`) === targetId
+      );
+      if (foundIdx === -1) return;
+      const cf = allFlows[foundIdx];
+      const isDep = cf.type !== "withdraw";
+      const amt = Math.round(Number(cf.amount || 0));
+      if (!confirm(`Xóa giao dịch ${isDep ? "Nạp" : "Rút"} ${fmtVnd(amt)} ngày ${cf.date} và hoàn lại số dư?`)) {
+        return;
+      }
+
+      const reverseDelta = isDep ? -amt : amt;
+      const newCash = Math.max(0, Math.round(Number(accountState.cash_balance || 0)) + reverseDelta);
+      const newDeposited = Math.max(0, Math.round(Number(accountState.total_deposited || 0)) + reverseDelta);
+      const remainingFlows = allFlows.filter((_, i) => i !== foundIdx);
+
+      await persistAccount({
+        cash_balance: newCash,
+        total_deposited: newDeposited,
+        cash_flows: remainingFlows,
+      });
+
+      renderCashflowHistory();
+      renderAccountSummary();
+      if (latestReport) renderDailyReport(latestReport);
+      showToast(`Đã xóa giao dịch ${isDep ? "Nạp" : "Rút"} ${fmtVnd(amt)}.`);
+    });
+  });
 }
 
 async function handleSaveCashflow(e) {
@@ -1667,3 +1874,4 @@ async function handleTriggerRescanCandidates() {
 }
 
 init();
+
