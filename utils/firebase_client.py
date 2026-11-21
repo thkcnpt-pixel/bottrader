@@ -77,6 +77,42 @@ class FirebaseClient:
             return
         self._db.collection(COL_FUNDAMENTALS).document(ticker).set(payload, merge=True)
 
+    def queue_fundamental(self, ticker: str, data: Dict[str, Any]) -> None:
+        """Buffer a fundamentals write; committed in Firestore batches of <=400 docs."""
+        import threading
+
+        lock = self.__dict__.setdefault("_fund_lock", threading.Lock())
+        payload = {**data, "updated_at": vn_now().isoformat()}
+        if self.dry_run:
+            logger.info("[DRY_RUN] queue_fundamental(%s): score=%s", ticker, payload.get("score"))
+            return
+        with lock:
+            buf = self.__dict__.setdefault("_fund_buf", {})
+            buf[ticker] = payload
+            if len(buf) >= 400:
+                self._flush_locked()
+
+    def flush_fundamentals(self) -> int:
+        """Commit all buffered fundamentals writes. Returns number of docs written."""
+        import threading
+
+        lock = self.__dict__.setdefault("_fund_lock", threading.Lock())
+        with lock:
+            return self._flush_locked()
+
+    def _flush_locked(self) -> int:
+        buf = self.__dict__.get("_fund_buf") or {}
+        if not buf:
+            return 0
+        items = list(buf.items())
+        buf.clear()
+        batch = self._db.batch()
+        col = self._db.collection(COL_FUNDAMENTALS)
+        for tk, payload in items:
+            batch.set(col.document(tk), payload, merge=True)
+        batch.commit()
+        return len(items)
+
     # -------------------- Portfolio --------------------
     def get_holding_portfolio(self) -> List[Dict[str, Any]]:
         if self.dry_run:

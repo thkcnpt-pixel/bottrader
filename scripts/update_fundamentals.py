@@ -475,7 +475,7 @@ def run_update_fundamentals(limit: int = 0) -> None:
                 if not has_any_bctc:
                     prev_doc = existing_cache.get(ticker)
                     if prev_doc and float(prev_doc.get("score", 0)) >= MIN_FUNDAMENTAL_SCORE:
-                        fb.save_fundamental(
+                        fb.queue_fundamental(
                             ticker,
                             {
                                 **prev_doc,
@@ -509,7 +509,7 @@ def run_update_fundamentals(limit: int = 0) -> None:
                         "avg_value_20d": round(avg_value_20d, 0),
                         "metrics": metrics,
                     }
-                    fb.save_fundamental(ticker, doc_payload)
+                    fb.queue_fundamental(ticker, doc_payload)
                     logger.info(
                         "[%d/%d] SAVED %s (%s | %s) | Score=%.1f | fit_500k=%s | missing_bctc=%s",
                         idx,
@@ -539,6 +539,7 @@ def run_update_fundamentals(limit: int = 0) -> None:
                 if is_err:
                     error_count += 1
 
+        fb.flush_fundamentals()
         error_rate = (error_count / total_listed) if total_listed > 0 else 0.0
         status = "degraded" if error_rate > DATA_ERROR_ALERT_THRESHOLD else "ok"
         fb.record_heartbeat(

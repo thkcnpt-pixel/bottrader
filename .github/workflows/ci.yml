@@ -31,8 +31,19 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt -r requirements-dev.txt
 
+      - name: Check JS syntax
+        run: |
+          node --check frontend/app.js
+          node --check mobile-android/www/app.js
+
       - name: Run Ruff Linter
         run: ruff check utils scripts tests
+
+      - name: Dependency security audit (non-blocking)
+        continue-on-error: true
+        run: |
+          pip install pip-audit
+          pip-audit -r requirements.txt
 
       - name: Run Unit Tests (pytest)
         env:

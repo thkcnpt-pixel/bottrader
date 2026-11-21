@@ -2454,6 +2454,9 @@ async function loadSystemHealth() {
 }
 
 // -------------------- Quick Stock Lookup (BCTC + Live Price + Quick Buy) --------------------
+const _lookupCache = new Map(); // ticker -> {t, fData, livePrice}
+const LOOKUP_CACHE_TTL_MS = 5 * 60 * 1000;
+
 async function handleStockLookup(e) {
   e.preventDefault();
   const input = $("stock-lookup-input");
@@ -2473,12 +2476,16 @@ async function handleStockLookup(e) {
   resultEl.innerHTML = `<p class="text-xs text-slate-400 py-1">Đang tra cứu dữ liệu BCTC &amp; giá khớp của <strong>${escapeHtml(ticker)}</strong>...</p>`;
 
   try {
-    const [fSnap, livePrice] = await Promise.all([
-      getDoc(doc(db, "fundamentals", ticker)).catch(() => null),
-      fetchLivePriceForTicker(ticker),
-    ]);
-
-    const fData = fSnap && fSnap.exists() ? fSnap.data() : null;
+    let cached = _lookupCache.get(ticker);
+    if (!cached || Date.now() - cached.t > LOOKUP_CACHE_TTL_MS) {
+      const [fSnap, lp] = await Promise.all([
+        getDoc(doc(db, "fundamentals", ticker)).catch(() => null),
+        fetchLivePriceForTicker(ticker),
+      ]);
+      cached = { t: Date.now(), fData: fSnap && fSnap.exists() ? fSnap.data() : null, livePrice: lp };
+      if (cached.fData || cached.livePrice) _lookupCache.set(ticker, cached);
+    }
+    const { fData, livePrice } = cached;
     const price = Number(livePrice || fData?.actual_close || 0);
     const liveCash = Math.max(0, Math.round(Number(accountState.cash_balance || 0)));
     const { buyFee } = getFeeRates();

@@ -620,12 +620,18 @@ class GeminiAnalyst:
         role: str,
     ) -> Tuple[Dict[str, Any], str]:
         errors: List[str] = []
+        fails = self.__dict__.setdefault("_provider_failures", {})
         for provider in provider_order:
+            # Circuit breaker: skip a provider after 3 consecutive failures in this run
+            if fails.get(provider, 0) >= 3:
+                errors.append(f"{provider}: circuit open (3 consecutive failures)")
+                continue
             try:
+                result = None
                 if provider == "gemini" and self.api_key:
-                    return self._call_gemini_json(prompt, schema, ticker, role)
-                if provider == "ckey" and self.ckey_api_key:
-                    return self._call_openai_compat_json(
+                    result = self._call_gemini_json(prompt, schema, ticker, role)
+                elif provider == "ckey" and self.ckey_api_key:
+                    result = self._call_openai_compat_json(
                         provider="ckey",
                         base_url=self.ckey_base_url,
                         api_key=self.ckey_api_key,
@@ -635,8 +641,8 @@ class GeminiAnalyst:
                         ticker=ticker,
                         role=role,
                     )
-                if provider == "openrouter" and self.openrouter_api_key:
-                    return self._call_openai_compat_json(
+                elif provider == "openrouter" and self.openrouter_api_key:
+                    result = self._call_openai_compat_json(
                         provider="openrouter",
                         base_url=self.openrouter_base_url,
                         api_key=self.openrouter_api_key,
@@ -646,7 +652,11 @@ class GeminiAnalyst:
                         ticker=ticker,
                         role=role,
                     )
+                if result is not None:
+                    fails[provider] = 0
+                    return result
             except Exception as exc:  # noqa: BLE001
+                fails[provider] = fails.get(provider, 0) + 1
                 errors.append(f"{provider}: {exc}")
 
         raise RuntimeError(" | ".join(errors) or "không có AI provider khả dụng")
