@@ -26,11 +26,37 @@ def vn_today_str() -> str:
 VNSTOCK_PRIMARY_SOURCE = os.getenv("VNSTOCK_PRIMARY_SOURCE", "VCI").upper()
 VNSTOCK_FALLBACK_SOURCE = os.getenv("VNSTOCK_FALLBACK_SOURCE", "TCBS").upper()
 
-# Gemini AI config
+# Gemini AI config (AI 1 — Phe Bò & Fallback)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip()
 GEMINI_FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-3.5-flash-lite").strip()
 GEMINI_SLEEP_SECONDS = float(os.getenv("GEMINI_SLEEP_SECONDS", "5.0"))
+
+# Ckey AI config (AI 2 — Phe Gấu / DeepSeek Free, OpenAI-compatible)
+CKEY_API_KEY = os.getenv("CKEY_API_KEY", "").strip()
+CKEY_BASE_URL = os.getenv("CKEY_BASE_URL", "https://api.xah.io/v1/chat/completions").strip()
+CKEY_MODEL = os.getenv("CKEY_MODEL", "deepseek-v4.1-flash-1017-free").strip()
+CKEY_FALLBACK_MODELS = [
+    m.strip()
+    for m in os.getenv("CKEY_FALLBACK_MODELS", "deepseek-v4.1-flash,qwen3.8-omni-flash").split(",")
+    if m.strip()
+]
+CKEY_TIMEOUT_SECONDS = float(os.getenv("CKEY_TIMEOUT_SECONDS", "35.0"))
+
+# OpenRouter AI config (AI 3 — Trọng tài, OpenAI-compatible)
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "").strip()
+OPENROUTER_BASE_URL = os.getenv(
+    "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1/chat/completions"
+).strip()
+OPENROUTER_MODEL = os.getenv(
+    "OPENROUTER_MODEL", "nvidia/nemotron-3-ultra-550b-a55b:free"
+).strip()
+OPENROUTER_FALLBACK_MODELS = [
+    m.strip()
+    for m in os.getenv("OPENROUTER_FALLBACK_MODELS", "openrouter/free").split(",")
+    if m.strip()
+]
+OPENROUTER_TIMEOUT_SECONDS = float(os.getenv("OPENROUTER_TIMEOUT_SECONDS", "45.0"))
 
 # Execution flags & Reliability (Phase 1)
 DRY_RUN = os.getenv("DRY_RUN", "false").lower() in ("1", "true", "yes")

@@ -475,6 +475,23 @@ function renderDailyReport(report) {
       const missBadge = c.missing_bctc
         ? `<span class="px-2 py-0.5 rounded-md text-[11px] font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/40">[Thiếu BCTC mới nhất]</span>`
         : "";
+      const decision = String(g.decision || "").toUpperCase();
+      const confScore =
+        Number.isFinite(Number(g.confidence_score)) && Number(g.confidence_score) > 0
+          ? Number(g.confidence_score)
+          : null;
+      const decisionBadge =
+        decision === "BUY"
+          ? `<span class="px-2 py-0.5 rounded-md text-[11px] font-bold bg-emerald-500/25 text-emerald-200 border border-emerald-400/50">AI: MUA${confScore ? ` (${confScore}đ)` : ""}</span>`
+          : decision === "AVOID"
+          ? `<span class="px-2 py-0.5 rounded-md text-[11px] font-bold bg-rose-500/25 text-rose-200 border border-rose-400/50">AI: TRÁNH${confScore ? ` (${confScore}đ)` : ""}</span>`
+          : decision === "WATCH"
+          ? `<span class="px-2 py-0.5 rounded-md text-[11px] font-bold bg-amber-500/20 text-amber-200 border border-amber-400/40">AI: THEO DÕI${confScore ? ` (${confScore}đ)` : ""}</span>`
+          : "";
+      const modelsObj = g.ai_models_used && typeof g.ai_models_used === "object" ? g.ai_models_used : {};
+      const modelsSummary = Object.entries(modelsObj)
+        .map(([k, v]) => `${k}: ${v}`)
+        .join(" • ");
 
       const liveCashSubnote =
         liveCash > 0 && actualClose > 0
@@ -510,6 +527,7 @@ function renderDailyReport(report) {
                 <span class="text-lg font-extrabold text-white tracking-tight">${escapeHtml(c.ticker)}</span>
                 <span class="text-[11px] text-slate-400">${escapeHtml(c.exchange)}</span>
                 ${signalBadge}
+                ${decisionBadge}
                 ${fitBadge}
                 ${missBadge}
               </div>
@@ -599,6 +617,11 @@ function renderDailyReport(report) {
                   ${!hasLegacy500k ? liveCashSubnote : ""}
                 </div>
               </div>
+              ${
+                modelsSummary
+                  ? `<p class="text-[10px] text-slate-500 pt-1">Models: ${escapeHtml(modelsSummary)}</p>`
+                  : ""
+              }
             </div>
           </details>
         </article>`;

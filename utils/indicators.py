@@ -163,6 +163,14 @@ def detect_buy_signal(df: pd.DataFrame) -> Optional[Dict[str, Any]]:
         return None
 
     vol_ratio = vol / vol_ma20
+    tail_20 = data.tail(20)
+    tail_60 = data.tail(min(60, len(data)))
+    levels = {
+        "high_20d": round(float(tail_20["high"].max()), 2),
+        "low_20d": round(float(tail_20["low"].min()), 2),
+        "high_60d": round(float(tail_60["high"].max()), 2),
+        "low_60d": round(float(tail_60["low"].min()), 2),
+    }
 
     # --- Type A: Pullback (Higher priority) ---
     in_pullback_zone = (PULLBACK_MA20_LOW_RATIO * ma20) <= close_p <= (PULLBACK_MA20_HIGH_RATIO * ma20)
@@ -186,6 +194,7 @@ def detect_buy_signal(df: pd.DataFrame) -> Optional[Dict[str, Any]]:
             "rsi14": round(rsi14, 2),
             "atr14": round(atr14, 2),
             "vol_ratio": round(vol_ratio, 2),
+            **levels,
             "reason": (
                 f"Pullback vùng MA20 ({close_p/ma20 - 1:+.1%}), "
                 f"RSI={rsi14:.1f}, lực cầu hồi phục sau nhịp chỉnh cạn cung."
@@ -226,6 +235,7 @@ def detect_buy_signal(df: pd.DataFrame) -> Optional[Dict[str, Any]]:
                 "rsi14": round(rsi14, 2),
                 "atr14": round(atr14, 2),
                 "vol_ratio": round(vol_ratio, 2),
+                **levels,
                 "reason": (
                     f"Breakout nền chặt {window} phiên (biên độ {base_range:.1%}), "
                     f"vượt đỉnh nền với Vol={vol_ratio:.2f}x MA20, RSI={rsi14:.1f}."

@@ -188,7 +188,7 @@ class TestNewsAndGeminiAndFrontendRules(unittest.TestCase):
         self.assertEqual(len(truncated.split()), 900)
 
     def test_gemini_fallback_never_vetoes(self):
-        analyst = GeminiAnalyst(api_key="")
+        analyst = GeminiAnalyst(api_key="", ckey_api_key="", openrouter_api_key="")
         res = analyst.analyze_risk("FPT", {}, {"articles": [], "events": []})
         self.assertEqual(
             set(res.keys()),
@@ -201,6 +201,9 @@ class TestNewsAndGeminiAndFrontendRules(unittest.TestCase):
                 "ai_referee_verdict",
                 "suggested_buy_price",
                 "suggested_buy_quantity",
+                "decision",
+                "confidence_score",
+                "ai_models_used",
             },
         )
 

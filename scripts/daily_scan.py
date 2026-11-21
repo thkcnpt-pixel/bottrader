@@ -248,12 +248,16 @@ def run_daily_scan(force: bool = FORCE_SCAN) -> None:
                 if missing_bctc:
                     tags.append("[Thiếu BCTC mới nhất]")
 
-                # Scale MA20/MA50/ATR14 to actual display price
+                # Scale MA20/MA50/ATR14/levels to actual display price
                 close_adj = float(signal["close_adj"])
                 scale = (actual_close / close_adj) if close_adj > 0 else 1.0
                 ma20_actual = round(float(signal["ma20"]) * scale, 0)
                 ma50_actual = round(float(signal["ma50"]) * scale, 0)
                 atr14_actual = round(float(signal.get("atr14", 0.0)) * scale, 0)
+                high_20d_actual = round(float(signal.get("high_20d", 0.0)) * scale, 0)
+                low_20d_actual = round(float(signal.get("low_20d", 0.0)) * scale, 0)
+                high_60d_actual = round(float(signal.get("high_60d", 0.0)) * scale, 0)
+                low_60d_actual = round(float(signal.get("low_60d", 0.0)) * scale, 0)
 
                 atr_stops = compute_atr_stops(
                     entry_price=actual_close,
@@ -286,6 +290,10 @@ def run_daily_scan(force: bool = FORCE_SCAN) -> None:
                     "ma20": ma20_actual,
                     "ma50": ma50_actual,
                     "atr14": atr14_actual,
+                    "high_20d": high_20d_actual,
+                    "low_20d": low_20d_actual,
+                    "high_60d": high_60d_actual,
+                    "low_60d": low_60d_actual,
                     "rsi14": signal["rsi14"],
                     "vol_ratio": signal["vol_ratio"],
                     "avg_value_20d_bn": round(avg_value_20d / 1e9, 1),
@@ -310,10 +318,10 @@ def run_daily_scan(force: bool = FORCE_SCAN) -> None:
         top_candidates = raw_candidates[:MAX_BUY_CANDIDATES]
         logger.info("Tier 2 selected %d/%d buy candidates.", len(top_candidates), len(raw_candidates))
 
-        # 4. Tier 4 — Gemini Risk Critique (max 3 tickers/day, NO veto)
+        # 4. Tier 4 — Multi-AI Debate Risk Critique (max 3 tickers/day, NO veto)
         for cand in top_candidates:
             ticker = cand["ticker"]
-            logger.info("Running Tier 4 news + Gemini critique for %s...", ticker)
+            logger.info("Running Tier 4 news + Multi-AI critique for %s...", ticker)
             vn_news_events = vn.get_company_news_and_events(ticker)
             news_bundle = collect_ticker_news(
                 ticker=ticker,
@@ -329,6 +337,14 @@ def run_daily_scan(force: bool = FORCE_SCAN) -> None:
                     "ticker": ticker,
                     "exchange": cand["exchange"],
                     "sector_group": cand["sector_group"],
+                    "vnindex_regime": {
+                        "close": vnindex_info.get("close", 0.0),
+                        "change_pct": vnindex_info.get("change_pct", 0.0),
+                        "ma50": vnindex_info.get("ma50", 0.0),
+                        "above_ma50": vnindex_info.get("above_ma50", True),
+                        "warning_flag": vnindex_info.get("warning_flag", False),
+                        "regime": vnindex_info.get("regime", ""),
+                    },
                     "fundamental_score": cand["fundamental_score"],
                     "technical_score": cand["technical_score"],
                     "signal_type": cand["signal_type"],
@@ -336,6 +352,11 @@ def run_daily_scan(force: bool = FORCE_SCAN) -> None:
                     "actual_close_vnd": cand["actual_close"],
                     "ma20_vnd": cand["ma20"],
                     "ma50_vnd": cand["ma50"],
+                    "atr14_vnd": cand["atr14"],
+                    "resistance_20d_vnd": cand["high_20d"],
+                    "support_20d_vnd": cand["low_20d"],
+                    "resistance_60d_vnd": cand["high_60d"],
+                    "support_60d_vnd": cand["low_60d"],
                     "rsi14": cand["rsi14"],
                     "vol_ratio": cand["vol_ratio"],
                     "fit_account": cand["fit_account"],
