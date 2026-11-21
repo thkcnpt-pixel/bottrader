@@ -378,10 +378,44 @@ function renderEmptyReport() {
   $("vni-close").textContent = "--";
   $("vni-change").textContent = "--";
   $("vni-ma50-badge").textContent = "Chưa có dữ liệu";
+  const lastScanEl = $("last-scan-completed-time");
+  if (lastScanEl) {
+    lastScanEl.textContent = "🕒 Quét & AI trả kết quả gần nhất: Chưa có dữ liệu";
+  }
   $("buy-candidates-list").innerHTML = `
     <div class="glass-card rounded-2xl p-6 text-center text-xs text-slate-400">
       Chưa có báo cáo nào trong Firestore <code>daily_reports</code>. Hãy chạy workflow <code>daily_scan.yml</code>.
     </div>`;
+}
+
+function fmtVnDateTime(isoStr, fallbackDate = "") {
+  if (!isoStr) return fallbackDate || "--";
+  try {
+    const d = new Date(isoStr);
+    if (Number.isNaN(d.getTime())) return String(isoStr);
+    const pad = (n) => String(n).padStart(2, "0");
+    // Format in Asia/Ho_Chi_Minh (UTC+7)
+    const vnDate = new Date(d.getTime() + 7 * 3600 * 1000);
+    const yyyy = vnDate.getUTCFullYear();
+    const mm = pad(vnDate.getUTCMonth() + 1);
+    const dd = pad(vnDate.getUTCDate());
+    const hh = pad(vnDate.getUTCHours());
+    const mi = pad(vnDate.getUTCMinutes());
+    const ss = pad(vnDate.getUTCSeconds());
+    return `${hh}:${mi}:${ss} • ${dd}/${mm}/${yyyy}`;
+  } catch {
+    return String(isoStr);
+  }
+}
+
+function getReportAiCompletedTimestamp(report) {
+  if (!report) return "";
+  if (report.scan_completed_at) return report.scan_completed_at;
+  const cands = Array.isArray(report.buy_candidates) ? report.buy_candidates : [];
+  for (let i = cands.length - 1; i >= 0; i -= 1) {
+    if (cands[i]?.ai_completed_at) return cands[i].ai_completed_at;
+  }
+  return report.updated_at || "";
 }
 
 function renderDailyReport(report) {
@@ -390,6 +424,15 @@ function renderDailyReport(report) {
   const changePct = vni.change_pct ?? 0;
   const aboveMa50 = vni.above_ma50 !== false;
   const warningFlag = Boolean(vni.warning_flag);
+
+  const lastScanEl = $("last-scan-completed-time");
+  if (lastScanEl) {
+    const rawTs = getReportAiCompletedTimestamp(report);
+    const formattedTs = fmtVnDateTime(rawTs, report.date || "");
+    lastScanEl.innerHTML = rawTs
+      ? `🕒 AI trả kết quả gần nhất: <strong class="text-emerald-300">${escapeHtml(formattedTs)}</strong>`
+      : `🕒 Phiên báo cáo: <strong class="text-slate-200">${escapeHtml(report.date || "--")}</strong>`;
+  }
 
   $("vnindex-warning-banner").classList.toggle("hidden", !warningFlag);
 
@@ -656,9 +699,18 @@ function renderDailyReport(report) {
           </div>
 
           <details class="group rounded-xl bg-slate-950/70 border border-slate-800 p-3">
-            <summary class="cursor-pointer text-xs font-semibold text-sky-300 flex items-center justify-between list-none">
+            <summary class="cursor-pointer text-xs font-semibold text-sky-300 flex items-center justify-between gap-2 list-none">
               <span>🤖 Hội đồng 3 AI phản biện (Bò vs Gấu vs Trọng tài)</span>
-              <span class="text-slate-400 group-open:rotate-180 transition">▾</span>
+              <span class="flex items-center gap-1.5 shrink-0">
+                ${
+                  c.ai_completed_at || report.scan_completed_at || report.updated_at
+                    ? `<span class="text-[10px] font-normal text-slate-400 tabular-nums">${escapeHtml(
+                        fmtVnDateTime(c.ai_completed_at || report.scan_completed_at || report.updated_at).split(" • ")[0]
+                      )}</span>`
+                    : ""
+                }
+                <span class="text-slate-400 group-open:rotate-180 transition">▾</span>
+              </span>
             </summary>
             <div class="mt-3 space-y-2.5 text-xs border-t border-slate-800 pt-3">
               ${
@@ -712,11 +764,14 @@ function renderDailyReport(report) {
                   ${!hasLegacy500k ? liveCashSubnote : ""}
                 </div>
               </div>
-              ${
-                modelsSummary
-                  ? `<p class="text-[10px] text-slate-500 pt-1">Models: ${escapeHtml(modelsSummary)}</p>`
-                  : ""
-              }
+              <div class="flex items-center justify-between flex-wrap gap-2 pt-1 text-[10px] text-slate-500 tabular-nums">
+                <span>${modelsSummary ? `Models: ${escapeHtml(modelsSummary)}` : ""}</span>
+                <span>${
+                  c.ai_completed_at || report.scan_completed_at || report.updated_at
+                    ? `🕒 AI phản hồi lúc: ${escapeHtml(fmtVnDateTime(c.ai_completed_at || report.scan_completed_at || report.updated_at))}`
+                    : ""
+                }</span>
+              </div>
             </div>
           </details>
         </article>`;
@@ -2225,6 +2280,72 @@ function handleSaveGhToken(e) {
   loadGhTokenStatus();
 }
 
+let activeRescanPollTimer = null;
+
+async function pollForNewAiScanResult(previousTimestamp, maxWaitMs = 240000, intervalMs = 6000) {
+  const startMs = Date.now();
+  const btn = $("btn-rescan-candidates");
+  const lastScanEl = $("last-scan-completed-time");
+  const prevFormatted = previousTimestamp ? fmtVnDateTime(previousTimestamp) : "chưa có";
+
+  if (activeRescanPollTimer) {
+    clearInterval(activeRescanPollTimer);
+    activeRescanPollTimer = null;
+  }
+
+  return new Promise((resolve) => {
+    activeRescanPollTimer = setInterval(async () => {
+      const elapsedSec = Math.round((Date.now() - startMs) / 1000);
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = `⏳ AI đang quét (${elapsedSec}s)...`;
+      }
+      if (lastScanEl) {
+        lastScanEl.innerHTML = `⏳ Đang chờ AI trả dữ liệu mới (${elapsedSec}s)... <span class="text-slate-500">(Lần gần nhất: ${escapeHtml(prevFormatted)})</span>`;
+      }
+
+      try {
+        const q = query(collection(db, "daily_reports"), orderBy("date", "desc"), limit(1));
+        const snap = await getDocs(q);
+        let newestDoc = null;
+        snap.forEach((d) => {
+          newestDoc = { date: d.id, ...d.data() };
+        });
+
+        if (newestDoc) {
+          const newTs = getReportAiCompletedTimestamp(newestDoc);
+          if (newTs && newTs !== previousTimestamp) {
+            clearInterval(activeRescanPollTimer);
+            activeRescanPollTimer = null;
+            await refreshAllData();
+            if (btn) {
+              btn.disabled = false;
+              btn.textContent = "🔍 Quét tiềm năng";
+            }
+            showToast(`✅ AI đã trả kết quả mới lúc ${fmtVnDateTime(newTs)}!`, 6000);
+            resolve(true);
+            return;
+          }
+        }
+      } catch (err) {
+        console.warn("Poll daily_reports warning:", err);
+      }
+
+      if (Date.now() - startMs >= maxWaitMs) {
+        clearInterval(activeRescanPollTimer);
+        activeRescanPollTimer = null;
+        await refreshAllData();
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = "🔍 Quét tiềm năng";
+        }
+        showToast("⚠️ Quá trình quét trên GitHub Actions mất nhiều thời gian hơn dự kiến. Bấm ↻ để kiểm tra lại sau ít phút.", 6000);
+        resolve(false);
+      }
+    }, intervalMs);
+  });
+}
+
 async function handleTriggerRescanCandidates() {
   const token = localStorage.getItem(GH_TOKEN_STORAGE_KEY) || "";
   if (!token) {
@@ -2234,9 +2355,10 @@ async function handleTriggerRescanCandidates() {
     return;
   }
 
+  const previousTimestamp = getReportAiCompletedTimestamp(latestReport);
   const btn = $("btn-rescan-candidates");
   btn.disabled = true;
-  btn.textContent = "⏳ Đang quét...";
+  btn.textContent = "⏳ Đang gửi lệnh...";
 
   try {
     const resp = await fetch(
@@ -2253,23 +2375,19 @@ async function handleTriggerRescanCandidates() {
     );
 
     if (resp.status === 204 || resp.ok) {
-      showToast("🚀 Bot đang quét mã tiềm năng + Hội đồng 3 AI phản biện (~35 giây)...", 6000);
-      setTimeout(async () => {
-        await refreshAllData();
-        showToast("✅ Đã đồng bộ báo cáo mã tiềm năng mới nhất!");
-      }, 38000);
+      showToast("🚀 Đã kích hoạt Bot! Thời gian quét chỉ cập nhật khi Hội đồng 3 AI trả dữ liệu mới về Firestore...", 6000);
+      pollForNewAiScanResult(previousTimestamp);
     } else {
       const errText = await resp.text();
       showToast(`Lỗi kích hoạt quét (${resp.status}): kiểm tra lại quyền Actions: Write của Token.`, 6000);
       console.warn("Workflow dispatch error:", resp.status, errText);
+      btn.disabled = false;
+      btn.textContent = "🔍 Quét tiềm năng";
     }
   } catch (err) {
     showToast("Lỗi kết nối GitHub API: " + (err.message || err));
-  } finally {
-    setTimeout(() => {
-      btn.disabled = false;
-      btn.textContent = "🔍 Quét tiềm năng";
-    }, 5000);
+    btn.disabled = false;
+    btn.textContent = "🔍 Quét tiềm năng";
   }
 }
 

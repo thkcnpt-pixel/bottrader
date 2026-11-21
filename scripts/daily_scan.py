@@ -420,6 +420,7 @@ def run_daily_scan(force: bool = FORCE_SCAN) -> None:
                 news_bundle=news_bundle,
             )
             cand["gemini_analysis"] = critique
+            cand["ai_completed_at"] = vn_now().isoformat()
             cand["news_count"] = len(news_bundle.get("articles", []))
             cand["account_snapshot"] = {
                 "available_cash_vnd": available_cash_vnd,
@@ -502,8 +503,10 @@ def run_daily_scan(force: bool = FORCE_SCAN) -> None:
             realized_trades=account_settings.get("realized_trades", []),
             initial_capital_vnd=float(account_settings.get("total_deposited") or total_nav_vnd),
         )
+        scan_completed_at_iso = vn_now().isoformat()
         report_payload = {
             "date": today_str,
+            "scan_completed_at": scan_completed_at_iso,
             "vnindex": vnindex_info,
             "portfolio_alerts": portfolio_alerts,
             "buy_candidates": top_candidates,
