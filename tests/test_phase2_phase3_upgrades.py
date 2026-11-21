@@ -173,6 +173,29 @@ class TestAnalyticsNewsAndProviders(unittest.TestCase):
         self.assertEqual(snap["VCI"]["avg_latency_ms"], 200.0)
         self.assertEqual(snap["VCI"]["last_error"], "timeout")
 
+    def test_frontend_and_mobile_www_in_sync_and_utilities_present(self):
+        fe_html = (ROOT_DIR / "frontend" / "index.html").read_text(encoding="utf-8")
+        fe_js = (ROOT_DIR / "frontend" / "app.js").read_text(encoding="utf-8")
+        apk_html = (ROOT_DIR / "mobile-android" / "www" / "index.html").read_text(encoding="utf-8")
+        apk_js = (ROOT_DIR / "mobile-android" / "www" / "app.js").read_text(encoding="utf-8")
+
+        self.assertEqual(fe_html, apk_html, "frontend/index.html and mobile-android/www/index.html are out of sync!")
+        self.assertEqual(fe_js, apk_js, "frontend/app.js and mobile-android/www/app.js are out of sync!")
+
+        # Verify all 7 UI utility enhancements exist
+        for required_id in (
+            "vni-regime-badge",
+            "vni-extra-metrics",
+            "stock-lookup-form",
+            "perf-pf",
+            "perf-mdd",
+            "perf-equity-svg-box",
+            "perf-by-ticker-list",
+            "sys-health-list",
+            "pf-calc-box",
+        ):
+            self.assertIn(f'id="{required_id}"', fe_html)
+
 
 if __name__ == "__main__":
     unittest.main()

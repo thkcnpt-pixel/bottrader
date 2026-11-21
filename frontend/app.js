@@ -258,7 +258,13 @@ function bindEvents() {
   $("pf-buy-price")?.addEventListener("input", updateDcaPreview);
   $("pf-quantity")?.addEventListener("input", updateDcaPreview);
   $("pf-accumulate-mode")?.addEventListener("change", updateDcaPreview);
+  document.querySelectorAll(".pf-cash-preset").forEach((btn) => {
+    btn.addEventListener("click", () => handleApplyCashPreset(Number(btn.dataset.cashPct || 100)));
+  });
   $("portfolio-form").addEventListener("submit", handleSavePortfolio);
+
+  // Quick Stock Lookup Form
+  $("stock-lookup-form")?.addEventListener("submit", handleStockLookup);
 
   // Deposit / Withdraw Modal
   $("btn-open-cashflow").addEventListener("click", openCashflowModal);
@@ -296,7 +302,13 @@ function bindEvents() {
 
 // -------------------- Data Loading --------------------
 async function refreshAllData() {
-  await Promise.all([loadDailyReports(), loadAccount(), loadPortfolio(), loadFcmSettings()]);
+  await Promise.all([
+    loadDailyReports(),
+    loadAccount(),
+    loadPortfolio(),
+    loadFcmSettings(),
+    loadSystemHealth(),
+  ]);
   renderAccountSummary();
   renderPortfolio();
   if (latestReport) {
@@ -394,6 +406,41 @@ function renderDailyReport(report) {
     : "inline-block px-2.5 py-1 rounded-full text-xs font-semibold bg-rose-500/20 text-rose-300 border border-rose-500/40";
   $("vni-ma50-val").textContent = `MA50: ${fmtNum(vni.ma50, 2)}`;
 
+  // Multi-Tier Market Regime Badge & Extra Metrics (MA20, MA200, Exposure Scale)
+  const regimeBadge = $("vni-regime-badge");
+  const extraMetrics = $("vni-extra-metrics");
+  const regimeKey = String(vni.regime || (aboveMa50 ? "BULL_STRONG" : "BEAR_DEFENSIVE")).toUpperCase();
+  const expScale = Number(vni.exposure_scale || (aboveMa50 ? 1.0 : 0.4));
+  if (regimeBadge) {
+    const regimeMap = {
+      BULL_STRONG: {
+        label: "🟢 Uptrend Mạnh",
+        cls: "px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40",
+      },
+      SIDEWAYS_ACCUMULATION: {
+        label: "🔵 Tích lũy",
+        cls: "px-2 py-0.5 rounded-md text-[10px] font-bold bg-sky-500/20 text-sky-300 border border-sky-500/40",
+      },
+      CAUTION_PULLBACK: {
+        label: "🟡 Nhịp chỉnh ngắn",
+        cls: "px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40",
+      },
+      BEAR_DEFENSIVE: {
+        label: "🔴 Phòng thủ",
+        cls: "px-2 py-0.5 rounded-md text-[10px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/40",
+      },
+    };
+    const rInfo = regimeMap[regimeKey] || regimeMap.SIDEWAYS_ACCUMULATION;
+    regimeBadge.textContent = rInfo.label;
+    regimeBadge.className = rInfo.cls;
+  }
+  if (extraMetrics) {
+    extraMetrics.classList.remove("hidden");
+    $("vni-ma20-val").textContent = vni.ma20 ? fmtNum(vni.ma20, 2) : fmtNum(closeVal, 2);
+    $("vni-ma200-val").textContent = vni.ma200 ? fmtNum(vni.ma200, 2) : fmtNum(vni.ma50, 2);
+    $("vni-exposure-val").textContent = `Tối đa ${Math.round(expScale * 100)}% sức mua`;
+  }
+
   const alerts = report.portfolio_alerts || [];
   const alertsWrap = $("daily-portfolio-alerts-wrap");
   const alertsList = $("daily-portfolio-alerts-list");
@@ -457,6 +504,28 @@ function renderDailyReport(report) {
       const liveMaxShares = unitCostWithFee > 0 && liveCash > 0 ? Math.floor(liveCash / unitCostWithFee) : 0;
       const liveMaxCost = Math.round(liveMaxShares * unitCostWithFee);
 
+      // Compute or extract ATR quantitative risk plan
+      const qPlan = c.quant_risk_plan || {};
+      const ma50Val = Number(c.ma50 || 0);
+      const atrStop = Number(
+        qPlan.stop_loss_vnd ||
+          (actualClose > 0
+            ? Math.round(Math.max(actualClose * 0.93, ma50Val > 0 && ma50Val < actualClose ? ma50Val * 0.99 : actualClose * 0.94))
+            : 0)
+      );
+      const atrStopDistPct =
+        actualClose > 0 && atrStop > 0 ? (((actualClose - atrStop) / actualClose) * 100).toFixed(1) : "6.0";
+      const atrTarget = Number(
+        qPlan.take_profit_target_vnd ||
+          (actualClose > 0 && atrStop > 0 ? Math.round(actualClose + 2 * (actualClose - atrStop)) : 0)
+      );
+      const quantShares =
+        liveMaxShares > 0
+          ? Number(qPlan.recommended_shares) > 0
+            ? Math.min(liveMaxShares, Number(qPlan.recommended_shares))
+            : Math.max(1, Math.floor(liveMaxShares * expScale))
+          : 0;
+
       const signalBadge =
         c.signal_type === "Pullback"
           ? `<span class="px-2 py-0.5 rounded-md text-[11px] font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">[Pullback]</span>`
@@ -519,6 +588,8 @@ function renderDailyReport(report) {
             : "Chưa có dữ liệu.";
       }
 
+      const prefillQty = quantShares > 0 ? quantShares : liveMaxShares > 0 ? Math.max(1, Math.floor(liveMaxShares / 2)) : 10;
+
       return `
         <article class="glass-card rounded-2xl p-4 space-y-3">
           <div class="flex items-start justify-between gap-2">
@@ -558,6 +629,28 @@ function renderDailyReport(report) {
               <p class="text-slate-400">Vol/MA20</p>
               <p class="font-semibold text-slate-200 tabular-nums">${fmtNum(c.vol_ratio, 2)}x</p>
             </div>
+          </div>
+
+          <!-- Quantitative ATR Stop-Loss / R:R 1:2 Target / Quick Buy Action Bar -->
+          <div class="flex items-center justify-between gap-2 flex-wrap rounded-xl bg-slate-950/75 border border-slate-800/90 px-3 py-2 text-[11px]">
+            <div class="flex items-center gap-3 flex-wrap tabular-nums">
+              <span class="text-rose-300">🛑 SL ATR: <strong>${fmtVnd(atrStop)}</strong> (-${atrStopDistPct}%)</span>
+              <span class="text-emerald-300">🎯 TP (1:2): <strong>${fmtVnd(atrTarget)}</strong></span>
+              ${
+                quantShares > 0
+                  ? `<span class="text-sky-300">⚖️ Chuẩn rủi ro: <strong>${quantShares} CP</strong></span>`
+                  : ""
+              }
+            </div>
+            <button type="button"
+                    data-quick-buy="${escapeHtml(c.ticker)}"
+                    data-exchange="${escapeHtml(c.exchange || "HOSE")}"
+                    data-price="${Math.round(actualClose)}"
+                    data-qty="${prefillQty}"
+                    data-notes="${escapeHtml(`${c.signal_type || "Swing"} • SL ${fmtVnd(atrStop)} • TP ${fmtVnd(atrTarget)}`)}"
+                    class="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-semibold shrink-0 transition">
+              + Mua mã này
+            </button>
           </div>
 
           <details class="group rounded-xl bg-slate-950/70 border border-slate-800 p-3">
@@ -627,6 +720,18 @@ function renderDailyReport(report) {
         </article>`;
     })
     .join("");
+
+  listEl.querySelectorAll("button[data-quick-buy]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      openPortfolioModal(null, {
+        ticker: btn.dataset.quickBuy,
+        exchange: btn.dataset.exchange || "HOSE",
+        buy_price: Number(btn.dataset.price || 0),
+        quantity: Number(btn.dataset.qty || 1),
+        notes: btn.dataset.notes || "",
+      });
+    });
+  });
 }
 
 // -------------------- Account NAV, P&L, Win Rate & Cash Ratio --------------------
@@ -802,10 +907,121 @@ function renderPerformanceStats(trades) {
   const avgWin = wins.length > 0 ? wins.reduce((a, t) => a + Number(t.net_pnl_pct || 0), 0) / wins.length : null;
   const avgLoss = losses.length > 0 ? losses.reduce((a, t) => a + Number(t.net_pnl_pct || 0), 0) / losses.length : null;
 
+  const grossProfit = wins.reduce((a, t) => a + Math.max(0, Number(t.net_pnl || 0)), 0);
+  const grossLoss = Math.abs(losses.reduce((a, t) => a + Math.min(0, Number(t.net_pnl || 0)), 0));
+  const profitFactor =
+    total === 0 ? null : grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? 99.0 : 0.0;
+
+  // Chronological cumulative equity & max drawdown
+  const chrono = [...trades].sort((a, b) => String(a.sell_date || "").localeCompare(String(b.sell_date || "")));
+  const baseCap = Math.max(Number(accountState.total_deposited || accountState.cash_balance || 0), 1_000_000);
+  let runningPnl = 0;
+  let peakEq = baseCap;
+  let maxDdPct = 0;
+  const curvePoints = [{ x: 0, pnl: 0 }];
+  const byTicker = {};
+  const byMonth = {};
+
+  chrono.forEach((t, i) => {
+    const net = Math.round(Number(t.net_pnl || 0));
+    runningPnl += net;
+    const eq = baseCap + runningPnl;
+    if (eq > peakEq) peakEq = eq;
+    const ddPct = peakEq > 0 ? ((peakEq - eq) / peakEq) * 100 : 0;
+    if (ddPct > maxDdPct) maxDdPct = ddPct;
+    curvePoints.push({ x: i + 1, pnl: runningPnl, ticker: t.ticker });
+
+    const sym = String(t.ticker || "N/A").toUpperCase();
+    byTicker[sym] = (byTicker[sym] || 0) + net;
+    const mKey = String(t.sell_date || "").slice(0, 7) || "N/A";
+    byMonth[mKey] = (byMonth[mKey] || 0) + net;
+  });
+
   $("perf-winrate").textContent = winRate !== null ? `${fmtNum(winRate, 1)}%` : "--";
   $("perf-wl").textContent = `${wins.length} / ${losses.length}`;
+  if ($("perf-pf")) {
+    $("perf-pf").textContent =
+      profitFactor === null ? "--" : profitFactor >= 99 ? "∞" : `${fmtNum(profitFactor, 2)}x`;
+  }
+  if ($("perf-mdd")) {
+    $("perf-mdd").textContent = total > 0 ? `-${fmtNum(maxDdPct, 1)}%` : "--";
+  }
   $("perf-avg-win").textContent = avgWin !== null ? `+${fmtNum(avgWin, 1)}%` : "--";
   $("perf-avg-loss").textContent = avgLoss !== null ? `${fmtNum(avgLoss, 1)}%` : "--";
+
+  // Render Pure SVG Cumulative Realized P&L Sparkline
+  const chartWrap = $("perf-equity-chart-wrap");
+  const svgBox = $("perf-equity-svg-box");
+  const endValEl = $("perf-equity-end-val");
+  if (chartWrap && svgBox && endValEl) {
+    if (total === 0) {
+      chartWrap.classList.add("hidden");
+    } else {
+      chartWrap.classList.remove("hidden");
+      endValEl.textContent = fmtSignedVnd(runningPnl);
+      endValEl.className = `font-bold tabular-nums ${runningPnl >= 0 ? "text-emerald-300" : "text-rose-400"}`;
+
+      const w = 320;
+      const h = 56;
+      const pad = 6;
+      const vals = curvePoints.map((p) => p.pnl);
+      const minV = Math.min(0, ...vals);
+      const maxV = Math.max(1, ...vals);
+      const span = Math.max(1, maxV - minV);
+      const toX = (idx) => pad + (idx / Math.max(1, curvePoints.length - 1)) * (w - pad * 2);
+      const toY = (v) => h - pad - ((v - minV) / span) * (h - pad * 2);
+
+      const polyPts = curvePoints.map((pt, idx) => `${toX(idx).toFixed(1)},${toY(pt.pnl).toFixed(1)}`).join(" ");
+      const zeroY = toY(0).toFixed(1);
+      const strokeColor = runningPnl >= 0 ? "#34d399" : "#fb7185";
+      const dots = curvePoints
+        .slice(1)
+        .map((pt, idx) => {
+          const cx = toX(idx + 1).toFixed(1);
+          const cy = toY(pt.pnl).toFixed(1);
+          const c = pt.pnl >= 0 ? "#34d399" : "#fb7185";
+          return `<circle cx="${cx}" cy="${cy}" r="2.6" fill="${c}" />`;
+        })
+        .join("");
+
+      svgBox.innerHTML = `
+        <svg viewBox="0 0 ${w} ${h}" class="w-full h-full overflow-visible">
+          <line x1="${pad}" y1="${zeroY}" x2="${w - pad}" y2="${zeroY}" stroke="#334155" stroke-dasharray="3,3" stroke-width="1" />
+          <polyline fill="none" stroke="${strokeColor}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" points="${polyPts}" />
+          ${dots}
+        </svg>`;
+    }
+  }
+
+  // Render P&L Breakdown by Ticker & Month
+  const breakdownWrap = $("perf-breakdown-wrap");
+  if (breakdownWrap && $("perf-by-ticker-list") && $("perf-by-month-list")) {
+    if (total === 0) {
+      breakdownWrap.classList.add("hidden");
+    } else {
+      breakdownWrap.classList.remove("hidden");
+      const tickerEntries = Object.entries(byTicker).sort((a, b) => b[1] - a[1]);
+      $("perf-by-ticker-list").innerHTML = tickerEntries
+        .map(
+          ([sym, val]) =>
+            `<span class="px-2 py-0.5 rounded bg-slate-900 border border-slate-800 tabular-nums ${
+              val >= 0 ? "text-emerald-300" : "text-rose-300"
+            }"><strong>${escapeHtml(sym)}</strong>: ${fmtSignedVnd(val)}</span>`
+        )
+        .join("");
+
+      const monthEntries = Object.entries(byMonth).sort((a, b) => b[0].localeCompare(a[0]));
+      $("perf-by-month-list").innerHTML = monthEntries
+        .slice(0, 6)
+        .map(
+          ([m, val]) =>
+            `<span class="px-2 py-0.5 rounded bg-slate-900 border border-slate-800 tabular-nums ${
+              val >= 0 ? "text-emerald-300" : "text-rose-300"
+            }"><strong>${escapeHtml(m)}</strong>: ${fmtSignedVnd(val)}</span>`
+        )
+        .join("");
+    }
+  }
 
   const listEl = $("realized-trades-list");
   if (total === 0) {
@@ -900,6 +1116,24 @@ function renderPerformanceStats(trades) {
   });
 }
 
+// -------------------- T+2.5 Settlement Helper --------------------
+function calcTradingDaysSince(buyDateStr) {
+  if (!buyDateStr) return 99;
+  const start = new Date(buyDateStr + "T00:00:00");
+  const now = new Date();
+  const end = new Date(now.toISOString().slice(0, 10) + "T00:00:00");
+  if (Number.isNaN(start.getTime()) || end < start) return 0;
+
+  let days = 0;
+  const cur = new Date(start);
+  while (cur < end) {
+    cur.setDate(cur.getDate() + 1);
+    const dow = cur.getDay();
+    if (dow !== 0 && dow !== 6) days += 1;
+  }
+  return days;
+}
+
 // -------------------- Portfolio CRUD --------------------
 async function loadPortfolio() {
   try {
@@ -943,6 +1177,27 @@ function renderPortfolio() {
       const trailingStopPrice = Math.round(highestPrice * 0.92);
       const belowMa50 = ma50 > 0 && latestPrice < ma50;
 
+      // T+2.5 Settlement Badge
+      const tDays = calcTradingDaysSince(p.buy_date);
+      const tBadge =
+        (p.status || "holding") !== "holding"
+          ? ""
+          : tDays >= 2
+          ? `<span class="px-2 py-0.5 rounded-md text-[10px] font-semibold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">✅ T+${tDays} (Hàng đã về)</span>`
+          : `<span class="px-2 py-0.5 rounded-md text-[10px] font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/40">⏳ T+${tDays} (Chờ về)</span>`;
+
+      // Visual Position Progress Bar between Stop-Loss (MA50 or Trailing) and +15% Take-Profit Target
+      const effectiveStop = p.sold_half
+        ? trailingStopPrice
+        : ma50 > 0 && ma50 < buyPrice
+        ? ma50
+        : Math.round(buyPrice * 0.93);
+      const target15Price = Math.round(buyPrice * 1.15);
+      const rangeSpan = Math.max(1, target15Price - effectiveStop);
+      const progressPct = Math.max(0, Math.min(100, Math.round(((latestPrice - effectiveStop) / rangeSpan) * 100)));
+      const distToStopPct = latestPrice > 0 ? (((latestPrice - effectiveStop) / latestPrice) * 100).toFixed(1) : "0.0";
+      const distToTpPct = latestPrice > 0 ? (((target15Price - latestPrice) / latestPrice) * 100).toFixed(1) : "0.0";
+
       return `
         <div class="glass-card rounded-2xl p-4 space-y-3">
           <div class="flex items-start justify-between">
@@ -950,6 +1205,7 @@ function renderPortfolio() {
               <div class="flex items-center gap-2 flex-wrap">
                 <span class="text-base font-extrabold text-white">${escapeHtml(p.ticker)}</span>
                 <span class="text-[11px] text-slate-400">${escapeHtml(p.exchange || "HOSE")}</span>
+                ${tBadge}
                 ${
                   p.sold_half
                     ? `<span class="px-2 py-0.5 rounded-md text-[10px] font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/40">Đã chốt 1/2</span>`
@@ -991,6 +1247,17 @@ function renderPortfolio() {
               <p class="font-semibold text-amber-300 tabular-nums">
                 ${p.sold_half ? fmtVnd(trailingStopPrice) : fmtVnd(highestPrice)}
               </p>
+            </div>
+          </div>
+
+          <!-- Visual Stop-Loss <-> Take-Profit (+15%) Range Bar -->
+          <div class="space-y-1 bg-slate-950/50 rounded-xl px-3 py-2 border border-slate-800/70">
+            <div class="flex items-center justify-between text-[10px] tabular-nums">
+              <span class="text-rose-300">🛑 Cắt lỗ: ${fmtVnd(effectiveStop)} (${distToStopPct}%)</span>
+              <span class="text-emerald-300">🎯 Chốt +15%: ${fmtVnd(target15Price)} (${Number(distToTpPct) > 0 ? `+${distToTpPct}%` : "Đã đạt!"})</span>
+            </div>
+            <div class="w-full h-1.5 rounded-full bg-slate-800 overflow-hidden">
+              <div class="h-full ${belowMa50 ? "bg-rose-500" : netPct >= 15 ? "bg-emerald-400" : "bg-sky-400"} transition-all" style="width: ${progressPct}%"></div>
             </div>
           </div>
 
@@ -1059,10 +1326,54 @@ function renderPortfolio() {
   });
 }
 
+function handleApplyCashPreset(pct) {
+  const buyPrice = Number($("pf-buy-price")?.value || 0);
+  const cashBalance = Math.max(0, Math.round(Number(accountState.cash_balance || 0)));
+  if (buyPrice <= 0) {
+    showToast("Hãy nhập Giá mua (VNĐ) trước khi bấm chia vốn.");
+    return;
+  }
+  if (cashBalance <= 0) {
+    showToast("Số dư tiền mặt hiện có đang bằng 0 đ. Hãy đồng bộ tiền mặt trước.");
+    return;
+  }
+  const { buyFee } = getFeeRates();
+  const unitCost = buyPrice * (1 + buyFee);
+  const budget = (cashBalance * Math.min(100, Math.max(1, pct))) / 100;
+  const qty = Math.max(1, Math.floor(budget / unitCost));
+  $("pf-quantity").value = qty;
+  updateDcaPreview();
+}
+
 function updateDcaPreview() {
   const isEdit = $("pf-ticker").disabled;
   const banner = $("pf-dca-banner");
   const preview = $("pf-dca-preview");
+  const costPreviewEl = $("pf-order-cost-preview");
+
+  const addQty = Number($("pf-quantity")?.value || 0);
+  const addPrice = Number($("pf-buy-price")?.value || 0);
+  const { buyFee } = getFeeRates();
+  const cashBalance = Math.max(0, Math.round(Number(accountState.cash_balance || 0)));
+  const { stockMarketValue } = getPortfolioSummaryMetrics();
+  const nav = Math.max(1, cashBalance + stockMarketValue);
+
+  if (costPreviewEl) {
+    if (addQty > 0 && addPrice > 0) {
+      const orderCost = Math.round(addQty * addPrice * (1 + buyFee));
+      const navWeightPct = ((orderCost / nav) * 100).toFixed(1);
+      const breakEven = calcBreakEvenPrice(addPrice);
+      const estStopLoss = Math.round(addPrice * 0.94);
+      const maxLossVnd = Math.round((breakEven - estStopLoss) * addQty);
+      costPreviewEl.innerHTML =
+        `Tổng tiền lệnh: <strong class="text-white">${fmtVnd(orderCost)}</strong> (${navWeightPct}% NAV) • ` +
+        `Hòa vốn: <strong class="text-emerald-300">${fmtVnd(breakEven)}</strong> • ` +
+        `Rủi ro SL (-6%): <span class="text-rose-300">-${fmtVnd(maxLossVnd)}</span>`;
+    } else {
+      costPreviewEl.textContent = "Nhập giá mua & số lượng để tính tổng tiền, tỷ trọng NAV và giá hòa vốn.";
+    }
+  }
+
   if (!banner || !preview) return;
 
   if (isEdit) {
@@ -1080,8 +1391,6 @@ function updateDcaPreview() {
   banner.classList.remove("hidden");
   const oldQty = Number(existing.quantity || 0);
   const oldPrice = Number(existing.buy_price || 0);
-  const addQty = Number($("pf-quantity").value || 0);
-  const addPrice = Number($("pf-buy-price").value || 0);
   const isAccumulate = $("pf-accumulate-mode").checked;
 
   if (!isAccumulate) {
@@ -1893,6 +2202,172 @@ async function handleTriggerRescanCandidates() {
       btn.disabled = false;
       btn.textContent = "🔍 Quét tiềm năng";
     }, 5000);
+  }
+}
+
+// -------------------- System Health Monitor (Heartbeat) --------------------
+async function loadSystemHealth() {
+  const listEl = $("sys-health-list");
+  const updatedEl = $("sys-health-updated");
+  if (!listEl) return;
+
+  try {
+    const snap = await getDoc(doc(db, "settings", "system_health"));
+    if (!snap.exists()) {
+      listEl.innerHTML = `<p class="text-slate-500 text-xs">Chưa có bản ghi Heartbeat (sẽ tự động tạo ở lần chạy Bot kế tiếp).</p>`;
+      return;
+    }
+    const data = snap.data() || {};
+    const workflows = data.workflows || {};
+    if (updatedEl && data.updated_at) {
+      updatedEl.textContent = `Cập nhật: ${String(data.updated_at).slice(0, 16).replace("T", " ")}`;
+    }
+
+    const wfLabels = {
+      daily_scan: "📊 Quét kỹ thuật & 3-AI EOD (18:00)",
+      intraday_alert: "⚡ Cảnh báo danh mục 30p/lần",
+      update_fundamentals: "🏛️ Quét BCTC toàn sàn (Chủ nhật)",
+    };
+
+    const statusBadgeMap = {
+      ok: { text: "✅ Tốt", cls: "bg-emerald-500/20 text-emerald-300 border-emerald-500/40" },
+      degraded: { text: "⚠️ Lỗi một phần", cls: "bg-amber-500/20 text-amber-300 border-amber-500/40" },
+      failed: { text: "🚨 Lỗi", cls: "bg-rose-500/20 text-rose-300 border-rose-500/40" },
+      skipped_holiday: { text: "🏖️ Nghỉ lễ / Cuối tuần", cls: "bg-sky-500/20 text-sky-300 border-sky-500/40" },
+      skipped_stale_bar: { text: "⏸️ Chưa có nến mới", cls: "bg-slate-800 text-slate-300 border-slate-700" },
+    };
+
+    const rows = Object.entries(wfLabels).map(([key, label]) => {
+      const info = workflows[key];
+      if (!info) {
+        return `
+          <div class="flex items-center justify-between bg-slate-950/60 rounded-lg px-2.5 py-1.5">
+            <span class="text-slate-300">${label}</span>
+            <span class="text-[10px] text-slate-500">Chưa ghi nhận</span>
+          </div>`;
+      }
+      const st = statusBadgeMap[info.status] || {
+        text: info.status || "N/A",
+        cls: "bg-slate-800 text-slate-300 border-slate-700",
+      };
+      const timeStr = String(info.timestamp || info.date || "").slice(0, 16).replace("T", " ");
+      return `
+        <div class="flex items-center justify-between gap-2 bg-slate-950/60 rounded-lg px-2.5 py-1.5">
+          <div class="min-w-0">
+            <p class="text-slate-200 font-medium truncate">${label}</p>
+            <p class="text-[10px] text-slate-500 tabular-nums">${escapeHtml(timeStr)}</p>
+          </div>
+          <span class="px-2 py-0.5 rounded border text-[10px] font-semibold shrink-0 ${st.cls}">${escapeHtml(st.text)}</span>
+        </div>`;
+    });
+
+    listEl.innerHTML = rows.join("");
+  } catch (err) {
+    console.warn("Could not read settings/system_health:", err);
+  }
+}
+
+// -------------------- Quick Stock Lookup (BCTC + Live Price + Quick Buy) --------------------
+async function handleStockLookup(e) {
+  e.preventDefault();
+  const input = $("stock-lookup-input");
+  const resultEl = $("stock-lookup-result");
+  const btn = $("btn-stock-lookup");
+  if (!input || !resultEl) return;
+
+  const ticker = (input.value || "").trim().toUpperCase();
+  if (!ticker || ticker.length < 3) {
+    showToast("Hãy nhập mã cổ phiếu hợp lệ (3–5 ký tự, VD: FPT, HPG).");
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = "⏳...";
+  resultEl.classList.remove("hidden");
+  resultEl.innerHTML = `<p class="text-xs text-slate-400 py-1">Đang tra cứu dữ liệu BCTC &amp; giá khớp của <strong>${escapeHtml(ticker)}</strong>...</p>`;
+
+  try {
+    const [fSnap, livePrice] = await Promise.all([
+      getDoc(doc(db, "fundamentals", ticker)).catch(() => null),
+      fetchLivePriceForTicker(ticker),
+    ]);
+
+    const fData = fSnap && fSnap.exists() ? fSnap.data() : null;
+    const price = Number(livePrice || fData?.actual_close || 0);
+    const liveCash = Math.max(0, Math.round(Number(accountState.cash_balance || 0)));
+    const { buyFee } = getFeeRates();
+    const unitCost = price * (1 + buyFee);
+    const maxShares = unitCost > 0 && liveCash > 0 ? Math.floor(liveCash / unitCost) : 0;
+    const prefillQty = maxShares > 0 ? Math.max(1, Math.floor(maxShares / 2)) : 10;
+
+    if (!fData && !price) {
+      resultEl.innerHTML = `
+        <div class="rounded-xl bg-rose-950/40 border border-rose-500/30 p-3 text-xs text-rose-200 flex items-center justify-between">
+          <span>Không tìm thấy dữ liệu BCTC hoặc giá cho mã <strong>${escapeHtml(ticker)}</strong> (hoặc mã dưới ngưỡng 65đ BCTC).</span>
+          <button type="button" data-lookup-close="1" class="text-slate-400 hover:text-white px-1.5">✕</button>
+        </div>`;
+      resultEl.querySelector("[data-lookup-close]")?.addEventListener("click", () => resultEl.classList.add("hidden"));
+      return;
+    }
+
+    const m = fData?.metrics || {};
+    const score = fData?.score ? `${fmtNum(fData.score, 1)}/100đ` : "Chưa có (<65đ)";
+    const ex = fData?.exchange || "HOSE";
+    const roe = m.roe_pct !== undefined && m.roe_pct !== null ? `${fmtNum(m.roe_pct, 1)}%` : "--";
+    const profitYoy = m.profit_yoy_pct !== undefined && m.profit_yoy_pct !== null ? `${m.profit_yoy_pct >= 0 ? "+" : ""}${fmtNum(m.profit_yoy_pct, 1)}%` : "--";
+    const pe = m.pe !== undefined && m.pe !== null ? fmtNum(m.pe, 1) : "--";
+    const pb = m.pb !== undefined && m.pb !== null ? fmtNum(m.pb, 2) : "--";
+
+    resultEl.innerHTML = `
+      <div class="rounded-xl bg-slate-950/80 border border-sky-500/35 p-3 space-y-2 text-xs">
+        <div class="flex items-start justify-between gap-2">
+          <div>
+            <div class="flex items-center gap-2 flex-wrap">
+              <span class="text-sm font-extrabold text-white">${escapeHtml(ticker)}</span>
+              <span class="text-[10px] text-slate-400">${escapeHtml(ex)}</span>
+              <span class="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[10px] font-semibold">BCTC: ${escapeHtml(score)}</span>
+              ${
+                maxShares > 0
+                  ? `<span class="px-2 py-0.5 rounded bg-violet-500/20 text-violet-300 border border-violet-500/30 text-[10px] font-semibold">Mua tối đa: ${maxShares} CP</span>`
+                  : ""
+              }
+            </div>
+            <p class="text-[11px] text-slate-400 mt-0.5">${escapeHtml(fData?.industry || "Cổ phiếu niêm yết")} • Quý gần nhất: ${escapeHtml(m.latest_quarter || "N/A")}</p>
+          </div>
+          <div class="flex items-center gap-2">
+            <span class="text-sm font-bold text-white tabular-nums">${price > 0 ? fmtVnd(price) : "--"}</span>
+            <button type="button" data-lookup-close="1" class="text-slate-400 hover:text-white px-1">✕</button>
+          </div>
+        </div>
+        <div class="grid grid-cols-4 gap-1.5 text-center bg-slate-900/70 rounded-lg p-2 text-[11px]">
+          <div><p class="text-slate-400">ROE</p><p class="font-semibold text-white tabular-nums">${escapeHtml(roe)}</p></div>
+          <div><p class="text-slate-400">LNST YoY</p><p class="font-semibold text-emerald-300 tabular-nums">${escapeHtml(profitYoy)}</p></div>
+          <div><p class="text-slate-400">P/E</p><p class="font-semibold text-white tabular-nums">${escapeHtml(pe)}</p></div>
+          <div><p class="text-slate-400">P/B</p><p class="font-semibold text-white tabular-nums">${escapeHtml(pb)}</p></div>
+        </div>
+        <div class="flex justify-end">
+          <button type="button" data-lookup-buy="1"
+                  class="px-3 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-semibold transition">
+            + Nhập lệnh Mua ${escapeHtml(ticker)}
+          </button>
+        </div>
+      </div>`;
+
+    resultEl.querySelector("[data-lookup-close]")?.addEventListener("click", () => resultEl.classList.add("hidden"));
+    resultEl.querySelector("[data-lookup-buy]")?.addEventListener("click", () => {
+      openPortfolioModal(null, {
+        ticker,
+        exchange: ex,
+        buy_price: price > 0 ? Math.round(price) : "",
+        quantity: prefillQty,
+        notes: `Tra nhanh • BCTC ${score}`,
+      });
+    });
+  } catch (err) {
+    resultEl.innerHTML = `<p class="text-xs text-rose-400">Lỗi tra cứu mã ${escapeHtml(ticker)}: ${escapeHtml(err.message || err)}</p>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Tra mã";
   }
 }
 

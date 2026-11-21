@@ -100,11 +100,14 @@
         </div>
       </div>
 
-      <!-- VN-Index Status Card -->
-      <div id="vnindex-card" class="glass-card rounded-2xl p-4">
-        <div class="flex items-center justify-between">
+      <!-- VN-Index Status Card (Multi-Tier Market Regime) -->
+      <div id="vnindex-card" class="glass-card rounded-2xl p-4 space-y-3">
+        <div class="flex items-center justify-between gap-2">
           <div>
-            <p class="text-xs text-slate-400 uppercase tracking-wider">VN-INDEX</p>
+            <div class="flex items-center gap-2 flex-wrap">
+              <p class="text-xs text-slate-400 uppercase tracking-wider">VN-INDEX</p>
+              <span id="vni-regime-badge" class="hidden px-2 py-0.5 rounded-md text-[10px] font-bold bg-slate-800 text-slate-300">--</span>
+            </div>
             <div class="flex items-baseline gap-2 mt-0.5">
               <span id="vni-close" class="text-2xl font-bold text-white tabular-nums">--</span>
               <span id="vni-change" class="text-sm font-semibold tabular-nums">--</span>
@@ -115,6 +118,33 @@
             <p id="vni-ma50-val" class="text-[11px] text-slate-400 mt-1 tabular-nums">MA50: --</p>
           </div>
         </div>
+        <div id="vni-extra-metrics" class="hidden grid grid-cols-3 gap-2 text-center bg-slate-950/60 rounded-xl p-2 text-[11px]">
+          <div>
+            <p class="text-slate-400">MA20</p>
+            <p id="vni-ma20-val" class="font-semibold text-slate-200 tabular-nums">--</p>
+          </div>
+          <div>
+            <p class="text-slate-400">MA200</p>
+            <p id="vni-ma200-val" class="font-semibold text-slate-200 tabular-nums">--</p>
+          </div>
+          <div>
+            <p class="text-slate-400">Khuyến nghị vốn</p>
+            <p id="vni-exposure-val" class="font-bold text-sky-300 tabular-nums">--</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Quick Stock Lookup (BCTC + Live Price + Quick Buy) -->
+      <div class="glass-card rounded-2xl p-3.5 space-y-2.5">
+        <form id="stock-lookup-form" class="flex items-center gap-2">
+          <input id="stock-lookup-input" type="text" maxlength="5" placeholder="🔎 Tra nhanh BCTC &amp; giá mã bất kỳ (VD: FPT, HPG, MBB)..."
+                 class="flex-1 uppercase rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-xs text-white placeholder:normal-case focus:outline-none focus:border-sky-500" />
+          <button type="submit" id="btn-stock-lookup"
+                  class="px-3.5 py-2 rounded-xl bg-sky-600 hover:bg-sky-500 text-white text-xs font-semibold shrink-0 transition">
+            Tra mã
+          </button>
+        </form>
+        <div id="stock-lookup-result" class="hidden"></div>
       </div>
 
       <!-- Portfolio Alerts from Daily Report -->
@@ -214,17 +244,17 @@
         </div>
       </div>
 
-      <!-- Performance Stats Card (Win Rate & Avg Win / Avg Loss) -->
+      <!-- Performance Stats Card (Win Rate, Profit Factor, Max DD, SVG Equity Curve & P&L Breakdown) -->
       <details class="glass-card rounded-2xl p-3.5 group">
         <summary class="cursor-pointer flex items-center justify-between list-none">
           <div class="flex items-center gap-2">
             <span class="text-sm">📈</span>
-            <span class="text-xs font-bold text-white">Thống kê hiệu suất (Win Rate &amp; Lãi/Lỗ TB)</span>
+            <span class="text-xs font-bold text-white">Thống kê hiệu suất &amp; Đường cong vốn</span>
           </div>
           <span id="perf-summary-badge" class="text-[11px] font-semibold text-slate-400">0 lệnh chốt ▾</span>
         </summary>
-        <div class="mt-3 pt-3 border-t border-slate-800 space-y-2.5">
-          <div class="grid grid-cols-4 gap-2 text-center bg-slate-950/60 rounded-xl p-2.5 text-[11px]">
+        <div class="mt-3 pt-3 border-t border-slate-800 space-y-3">
+          <div class="grid grid-cols-3 sm:grid-cols-6 gap-2 text-center bg-slate-950/60 rounded-xl p-2.5 text-[11px]">
             <div>
               <p class="text-slate-400">Win Rate</p>
               <p id="perf-winrate" class="font-bold text-emerald-300 tabular-nums">--</p>
@@ -232,6 +262,14 @@
             <div>
               <p class="text-slate-400">Thắng / Thua</p>
               <p id="perf-wl" class="font-bold text-white tabular-nums">0 / 0</p>
+            </div>
+            <div>
+              <p class="text-slate-400">Profit Factor</p>
+              <p id="perf-pf" class="font-bold text-sky-300 tabular-nums">--</p>
+            </div>
+            <div>
+              <p class="text-slate-400">Max Drawdown</p>
+              <p id="perf-mdd" class="font-bold text-amber-300 tabular-nums">--</p>
             </div>
             <div>
               <p class="text-slate-400">Lãi TB</p>
@@ -242,6 +280,28 @@
               <p id="perf-avg-loss" class="font-bold text-rose-400 tabular-nums">--</p>
             </div>
           </div>
+
+          <!-- Pure SVG Cumulative Realized P&L Sparkline -->
+          <div id="perf-equity-chart-wrap" class="hidden rounded-xl bg-slate-950/70 border border-slate-800/80 p-2.5 space-y-1">
+            <div class="flex items-center justify-between text-[10px] text-slate-400">
+              <span>Đường cong Lãi/Lỗ chốt lũy kế</span>
+              <span id="perf-equity-end-val" class="font-bold tabular-nums text-emerald-300">--</span>
+            </div>
+            <div id="perf-equity-svg-box" class="w-full h-16"></div>
+          </div>
+
+          <!-- P&L Breakdown by Ticker & Month -->
+          <div id="perf-breakdown-wrap" class="hidden grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px]">
+            <div class="rounded-xl bg-slate-950/50 border border-slate-800/70 p-2.5 space-y-1">
+              <p class="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Lãi/Lỗ theo Mã</p>
+              <div id="perf-by-ticker-list" class="flex flex-wrap gap-1.5"></div>
+            </div>
+            <div class="rounded-xl bg-slate-950/50 border border-slate-800/70 p-2.5 space-y-1">
+              <p class="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Lãi/Lỗ theo Tháng</p>
+              <div id="perf-by-month-list" class="flex flex-wrap gap-1.5"></div>
+            </div>
+          </div>
+
           <div id="realized-trades-list" class="space-y-1.5 max-h-44 overflow-y-auto text-[11px]">
             <p class="text-slate-500 text-center py-2">Chưa có lệnh chốt lời / cắt lỗ nào.</p>
           </div>
@@ -296,6 +356,20 @@
         </button>
         <p id="fcm-feedback" class="hidden text-xs leading-relaxed"></p>
         <p id="fcm-token-count" class="text-[11px] text-slate-400">Số thiết bị đã đăng ký: --</p>
+      </div>
+
+      <!-- System Health Monitor Card (Heartbeat) -->
+      <div class="glass-card rounded-2xl p-4 space-y-2.5">
+        <div class="flex items-center justify-between">
+          <div>
+            <h3 class="text-sm font-semibold text-white">🩺 Trạng thái Bot &amp; Heartbeat</h3>
+            <p class="text-xs text-slate-400 mt-0.5">Giám sát lần chạy gần nhất của 3 tiến trình tự động trên GitHub Actions.</p>
+          </div>
+          <span id="sys-health-updated" class="text-[10px] text-slate-400 tabular-nums">--</span>
+        </div>
+        <div id="sys-health-list" class="space-y-1.5 text-xs">
+          <p class="text-slate-500 text-xs">Đang kiểm tra trạng thái...</p>
+        </div>
       </div>
 
       <!-- Fee & Tax Settings -->
@@ -401,6 +475,22 @@
             <input id="pf-quantity" type="number" required min="1" step="1" placeholder="10"
                    class="w-full rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-white tabular-nums focus:outline-none focus:border-emerald-500" />
           </div>
+        </div>
+
+        <!-- Interactive Cash Allocation Presets & Order Risk Calculator -->
+        <div id="pf-calc-box" class="rounded-xl bg-slate-950/70 border border-slate-800 p-2.5 space-y-2">
+          <div class="flex items-center justify-between gap-1.5 flex-wrap">
+            <span class="text-[11px] text-slate-400">Chia vốn tiền mặt:</span>
+            <div class="flex gap-1">
+              <button type="button" data-cash-pct="25" class="pf-cash-preset px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-sky-300 text-[10px] font-semibold">25%</button>
+              <button type="button" data-cash-pct="50" class="pf-cash-preset px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-sky-300 text-[10px] font-semibold">50%</button>
+              <button type="button" data-cash-pct="75" class="pf-cash-preset px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-sky-300 text-[10px] font-semibold">75%</button>
+              <button type="button" data-cash-pct="100" class="pf-cash-preset px-2 py-0.5 rounded bg-emerald-600/25 hover:bg-emerald-600/40 text-emerald-300 border border-emerald-500/30 text-[10px] font-semibold">Tối đa</button>
+            </div>
+          </div>
+          <p id="pf-order-cost-preview" class="text-[11px] text-slate-300 tabular-nums leading-relaxed">
+            Nhập giá mua &amp; số lượng để tính tổng tiền, tỷ trọng NAV và giá hòa vốn.
+          </p>
         </div>
 
         <div id="pf-dca-banner" class="hidden rounded-xl bg-sky-950/50 border border-sky-500/40 p-2.5 text-xs text-sky-200 space-y-1">
@@ -578,6 +668,48 @@
           <label class="block text-xs text-slate-300 mb-1">Ngày bán *</label>
           <input id="sell-date" type="date" required
                  class="w-full rounded-xl bg-slate-950 border border-slate-700 px-3 py-2 text-sm text-white focus:outline-none focus:border-amber-500" />
+        </div>
+
+        <div id="sell-preview" class="rounded-xl bg-slate-950/70 border border-slate-800 p-3 text-xs space-y-1">
+          <p class="text-slate-400">Nhập giá bán &amp; số lượng để xem tiền thực nhận sau thuế/phí.</p>
+        </div>
+
+        <button type="submit" id="btn-confirm-sell"
+                class="w-full rounded-xl bg-amber-600 hover:bg-amber-500 text-white font-semibold py-2.5 text-sm transition">
+          Xác nhận bán &amp; Cộng tiền về tài khoản
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Mobile Bottom Navigation -->
+  <nav id="bottom-nav" class="hidden fixed bottom-0 inset-x-0 z-30 bg-slate-950/95 backdrop-blur border-t border-slate-800">
+    <div class="max-w-3xl mx-auto grid grid-cols-3">
+      <button data-tab="dashboard" class="tab-btn active flex flex-col items-center py-2.5 text-slate-400">
+        <span class="text-base leading-none">📊</span>
+        <span class="text-[11px] font-medium mt-1">Báo cáo</span>
+        <span class="tab-indicator w-6 h-0.5 bg-emerald-400 rounded-full mt-1"></span>
+      </button>
+      <button data-tab="portfolio" class="tab-btn flex flex-col items-center py-2.5 text-slate-400">
+        <span class="text-base leading-none">💼</span>
+        <span class="text-[11px] font-medium mt-1">Danh mục</span>
+        <span class="tab-indicator w-6 h-0.5 bg-emerald-400 rounded-full mt-1"></span>
+      </button>
+      <button data-tab="settings" class="tab-btn flex flex-col items-center py-2.5 text-slate-400">
+        <span class="text-base leading-none">🔔</span>
+        <span class="text-[11px] font-medium mt-1">Cài đặt</span>
+        <span class="tab-indicator w-6 h-0.5 bg-emerald-400 rounded-full mt-1"></span>
+      </button>
+    </div>
+  </nav>
+
+  <!-- Foreground Toast Notification -->
+  <div id="toast" class="hidden fixed top-16 right-4 left-4 sm:left-auto sm:w-80 z-50 rounded-xl bg-slate-800 border border-emerald-500/50 p-3.5 shadow-2xl text-xs text-white"></div>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
+py-2 text-sm text-white focus:outline-none focus:border-amber-500" />
         </div>
 
         <div id="sell-preview" class="rounded-xl bg-slate-950/70 border border-slate-800 p-3 text-xs space-y-1">
